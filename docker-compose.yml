@@ -1,0 +1,14 @@
+services:
+  script-merge:
+    build: .
+    container_name: script-merge
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      TZ: Asia/Shanghai
+      # 可选：通过环境变量固定管理密码（设置后网页端不可修改）。
+      # 不设置则首次打开网页时设置密码。
+      # ADMIN_PASSWORD: "change-me"

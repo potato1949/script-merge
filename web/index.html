@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>订阅合并</title>
+<style>
+/* 配色：改主题只需改这两组变量 */
+:root {
+  --bg: #faf9f5; --side: #f0eee6; --surface: #ffffff; --sunken: #f5f4ed;
+  --text: #141413; --muted: #6b6a64; --line: #e3e0d3; --line-strong: #cfccbd;
+  --accent: #c96442; --accent-hover: #b5563a; --on-accent: #ffffff; --accent-soft: #f6e4dc;
+  --danger: #b3402f; --ok: #47724a; --warn-bg: #f7ecd2; --warn: #7a5410;
+  --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, "Songti SC", "STSong", "Source Han Serif SC", "Noto Serif CJK SC", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #262624; --side: #1f1e1d; --surface: #30302e; --sunken: #232321;
+    --text: #f5f4ed; --muted: #a6a39a; --line: #42413d; --line-strong: #5a5852;
+    --accent: #d97757; --accent-hover: #e38a6c; --on-accent: #1f1e1d; --accent-soft: #4a3229;
+    --danger: #ec8573; --ok: #8fbf92; --warn-bg: #43381f; --warn: #ecc878;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+
+/* ---------- 左栏：订阅组列表 ---------- */
+.shell { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: 100vh; }
+.rail { position: sticky; top: 0; height: 100vh; overflow-y: auto; background: var(--side); border-right: 1px solid var(--line); padding: 22px 12px 14px; display: flex; flex-direction: column; }
+.brand { display: flex; align-items: center; gap: 9px; padding: 0 10px 18px; font: 600 19px/1.2 var(--serif); letter-spacing: .01em; }
+.brand svg { color: var(--accent); flex: none; }
+.rail-label { font-size: 12px; color: var(--muted); padding: 4px 10px 6px; }
+.glist { display: flex; flex-direction: column; gap: 2px; }
+.rail button { border: 1px solid transparent; background: none; text-align: left; border-radius: 9px; padding: 7px 10px; color: var(--muted); }
+.rail button:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); border-color: transparent; }
+.rail button.on { background: var(--surface); color: var(--text); border-color: var(--line); }
+.gitem { display: flex; flex-direction: column; gap: 1px; }
+.gitem b { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gitem small { font-size: 12px; color: var(--muted); }
+.rail .gnew { color: var(--accent); margin-top: 4px; }
+.railnav { margin-top: auto; padding-top: 16px; display: flex; flex-direction: column; gap: 2px; }
+
+/* ---------- 工作区 ---------- */
+main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
+.ws-head { position: sticky; top: 0; z-index: 5; background: var(--bg); padding-top: 22px; }
+.ws-top { display: flex; align-items: center; gap: 10px; min-height: 44px; }
+.ws-top h2, .title-input { font: 500 28px/1.2 var(--serif); letter-spacing: .01em; margin: 0; }
+.ws-top h2 { margin-right: auto; }
+.dirty { color: var(--warn); font-size: 13px; white-space: nowrap; }
+.tabs { display: flex; gap: 2px; margin-top: 10px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.ws-head.plain { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 9px 12px 8px; white-space: nowrap; }
+.tabs button:hover { color: var(--text); }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs .n { margin-left: 6px; font-size: 12px; color: var(--muted); font-weight: 400; }
+.content { padding-top: 18px; }
+
+.toolbar { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+.toolbar .hint { margin: 0 auto 0 0; }
+.toolbar .row { flex: none; flex-wrap: nowrap; }
+.hint { color: var(--muted); font-size: 13px; margin: 0 0 12px; max-width: 68ch; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
+.card h3, dialog h3 { margin: 0 0 4px; font: 600 17px/1.3 var(--serif); }
+.section-title { font: 600 17px/1.3 var(--serif); margin: 26px 0 10px; }
+.section-title:first-child { margin-top: 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.wide { grid-column: 1 / -1; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.gap { height: 12px; }
+
+/* 可展开的行：订阅源、策略组、模板 */
+.list { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 14px; overflow: hidden; }
+.item + .item { border-top: 1px solid var(--line); }
+.item-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer; min-height: 48px; }
+.item-head:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.item-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.chev { flex: none; width: 14px; display: inline-flex; justify-content: center; color: var(--muted); }
+.chev::before { content: ""; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(-45deg); transition: transform .15s; }
+.item.open .chev::before { transform: rotate(45deg); }
+.item-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.item.off .item-name { color: var(--muted); font-weight: 400; }
+.chip { flex: none; font-size: 12px; padding: 1px 8px; border-radius: 6px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
+.item-ctl { margin-left: auto; display: flex; gap: 4px; flex: none; }
+.item-body { padding: 4px 16px 18px 38px; }
+.empty { border: 1px dashed var(--line-strong); border-radius: 12px; padding: 28px 20px; text-align: center; color: var(--muted); margin-bottom: 14px; }
+.empty b { display: block; color: var(--text); font: 600 16px/1.4 var(--serif); margin-bottom: 4px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* 表单 */
+label.f { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+label.c { display: inline-flex; align-items: center; gap: 7px; color: var(--text); }
+input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+input[type=text], input[type=password], input[type=number], select, textarea {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 8px;
+  background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans);
+}
+textarea { font: 12.5px/1.6 var(--mono); resize: vertical; white-space: pre; overflow: auto; }
+::placeholder { color: color-mix(in srgb, var(--muted) 70%, transparent); }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button { font: 14px/1.4 var(--sans); padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); cursor: pointer; white-space: nowrap; }
+button:hover:not(:disabled) { border-color: var(--text); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
+button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.danger { color: var(--danger); }
+button.danger:hover:not(:disabled) { border-color: var(--danger); }
+button.sm { padding: 3px 9px; font-size: 12.5px; border-radius: 6px; }
+button:disabled { opacity: .4; cursor: default; }
+/* 订阅组标题：看起来是标题，点击即可改名（写在通用输入框样式之后以覆盖它） */
+.ws-top input.title-input { flex: 1; width: auto; min-width: 0; margin: 0 auto 0 -9px; padding: 3px 8px; border: 1px solid transparent; border-radius: 8px; background: none; font: 500 28px/1.2 var(--serif); letter-spacing: .01em; text-overflow: ellipsis; }
+.ws-top input.title-input:hover { border-color: var(--line-strong); }
+.ws-top input.title-input:focus-visible { border-color: var(--line-strong); background: var(--surface); outline-offset: 0; }
+.variants { border-left: 2px solid var(--line); padding-left: 12px; }
+.sublabel { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; max-width: 68ch; }
+.vrow { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 8px; align-items: center; margin-bottom: 6px; }
+
+/* 状态与输出 */
+.tag { flex: none; font-size: 12.5px; padding: 2px 10px; border-radius: 99px; background: var(--sunken); color: var(--muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag.ok { color: var(--ok); }
+.tag.err { color: var(--danger); background: var(--accent-soft); }
+.warnbox { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 9px 13px; margin-bottom: 12px; font-size: 13px; }
+.warnbox div + div { margin-top: 3px; }
+pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; max-height: 62vh; font: 12.5px/1.6 var(--mono); margin: 0; }
+.tblwrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 820px; }
+td, th { padding: 4px; text-align: left; font-size: 12.5px; vertical-align: middle; }
+th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+td input[type=text], td select { padding: 5px 8px; font-size: 13px; }
+td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 对话框 */
+dialog { border: 1px solid var(--line); border-radius: 14px; padding: 22px; background: var(--surface); color: var(--text); width: min(480px, 92vw); box-shadow: 0 18px 50px rgba(20, 20, 19, .18); }
+dialog::backdrop { background: rgba(20, 20, 19, .38); }
+dialog .hint { margin-bottom: 14px; }
+dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.pick { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow-y: auto; }
+.pick button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; background: var(--bg); border-color: var(--line); }
+.pick button b { margin-right: auto; overflow: hidden; text-overflow: ellipsis; }
+.pick button.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+dialog label.f + label.f { margin-top: 12px; }
+
+/* 登录 */
+.center { max-width: 380px; margin: 16vh auto 0; padding: 28px; }
+.center h3 { font-size: 24px; font-weight: 500; margin-bottom: 8px; }
+.center button { width: 100%; margin-top: 12px; padding: 9px; }
+
+#toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 99; background: var(--text); color: var(--bg); padding: 9px 18px; border-radius: 99px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; font-size: 13.5px; }
+#toast.show { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { #toast, .chev::before { transition: none; } }
+
+@media (max-width: 780px) {
+  .shell { display: block; }
+  .rail { position: static; height: auto; padding: 14px 12px 10px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .brand { padding-bottom: 8px; }
+  .rail-label { display: none; }
+  .glist, .railnav { flex-direction: row; overflow-x: auto; }
+  .gitem small { display: none; }
+  .rail .gnew { margin-top: 0; }
+  .railnav { margin-top: 6px; padding-top: 0; }
+  main { padding: 0 16px 60px; }
+  .ws-head { padding-top: 14px; }
+  .ws-top h2, .ws-top input.title-input { font-size: 23px; }
+  .ws-top input.title-input { flex-basis: 100%; }
+  .ws-top { flex-wrap: wrap; }
+  .toolbar { flex-direction: column; gap: 8px; }
+  .item-head { flex-wrap: wrap; }
+  .item-body { padding-left: 16px; }
+  .vrow { grid-template-columns: minmax(0, 1fr) auto; }
+  .vrow > :nth-child(2) { grid-column: 1; grid-row: 2; }
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast"></div>
+<script>
+'use strict';
+// ---------- 预设（新增 UA 或规则源只需改这里） ----------
+const UA_PRESETS = [
+  'clash-verge/v2.4.2', 'mihomo/1.19.15', 'clash.meta', 'ClashforWindows/0.20.39',
+  'ClashMetaForAndroid/2.11.18.Meta', 'FlClash/v0.8.90', 'Stash/3.1.1 Clash/1.11.0',
+  'Shadowrocket/2615 CFNetwork/1568.200.51 Darwin/24.1.0', 'Quantumult%20X/1.5.2 (iPhone; iOS 18.1)',
+  'Surge iOS/3400', 'Loon/3.2.4 CFNetwork/1568.200.51 Darwin/24.1.0', 'sing-box 1.12.0', 'v2rayN/7.15.0', 'v2rayNG/1.10.20',
+];
+const UA_KEYWORDS = ['clash|mihomo|stash|flclash', 'shadowrocket', 'quantumult', 'surge', 'loon', 'sing-box', 'v2ray'];
+const RULE_SOURCES = {
+  bm7: { label: 'blackmatrix7/ios_rule_script', format: 'yaml', behavior: () => 'classical', id: n => n,
+    url: n => `https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/${n}/${n}.yaml`,
+    names: ['OpenAI', 'Claude', 'Gemini', 'Copilot', 'Google', 'YouTube', 'Netflix', 'Disney', 'Spotify', 'Telegram', 'Twitter', 'Facebook', 'Instagram', 'TikTok', 'GitHub', 'Microsoft', 'OneDrive', 'Apple', 'Steam', 'Epic', 'PayPal', 'Amazon', 'Cloudflare', 'Bahamut', 'BiliBili', 'Global', 'GlobalMedia', 'Proxy', 'China', 'ChinaMax', 'ChinaMedia', 'Lan', 'Advertising', 'AdvertisingLite', 'Privacy', 'Hijacking', 'Game', 'Download', 'Speedtest'] },
+  loyal: { label: 'Loyalsoldier/clash-rules', format: 'yaml', behavior: n => /cidr$/.test(n) ? 'ipcidr' : 'domain', id: n => 'ls-' + n,
+    url: n => `https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/${n}.txt`,
+    names: ['reject', 'icloud', 'apple', 'google', 'proxy', 'direct', 'private', 'gfw', 'tld-not-cn', 'telegramcidr', 'cncidr', 'lancidr', 'applications'] },
+  acl: { label: 'ACL4SSR', format: 'text', behavior: () => 'classical', id: n => 'acl-' + n,
+    url: n => `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/${n}.list`,
+    names: ['LocalAreaNetwork', 'UnBan', 'BanAD', 'BanProgramAD', 'GoogleCN', 'Microsoft', 'Apple', 'Telegram', 'ProxyMedia', 'ProxyGFWlist', 'ChinaDomain', 'ChinaCompanyIp', 'Download'] },
+  geosite: { label: 'MetaCubeX geosite (mrs，需 mihomo 内核)', format: 'mrs', behavior: () => 'domain', id: n => 'geosite-' + n,
+    url: n => `https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/${n}.mrs`,
+    names: ['cn', 'geolocation-!cn', 'private', 'category-ads-all', 'openai', 'anthropic', 'google', 'youtube', 'netflix', 'telegram', 'github', 'microsoft', 'apple', 'steam', 'bilibili'] },
+  geoip: { label: 'MetaCubeX geoip (mrs，需 mihomo 内核)', format: 'mrs', behavior: () => 'ipcidr', id: n => 'geoip-' + n,
+    url: n => `https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/${n}.mrs`,
+    names: ['cn', 'private', 'telegram', 'google', 'netflix', 'cloudflare'] },
+};
+const PARSER_EXAMPLE = `# CFW Parsers 语法（YAML 形式），在节点、策略组、规则生成之后执行
+yaml:
+  prepend-rules:
+    - DOMAIN,test.com,DIRECT
+  prepend-proxy-groups:
+    - {name: myGroup, type: fallback, url: 'http://www.gstatic.com/generate_204', interval: 300, proxies: [DIRECT]}
+  mix-object:
+    allow-lan: true
+  commands:
+    - dns.enable=false
+    - proxy-groups.myGroup.proxies=[]proxyNames|HK
+    - proxy-groups.0.proxies.2+DIRECT`;
+const GROUP_TYPES = [['select', '手动选择'], ['url-test', '自动测速'], ['fallback', '故障转移'], ['load-balance', '负载均衡']];
+const NODE_MODES = [['none', '不包含节点'], ['all', '全部节点'], ['filter', '按正则筛选']];
+
+// 模板的三种类型：fields 是模板与订阅组之间互相复制的字段
+const KINDS = {
+  groups: { label: '策略组', fields: ['groups'], summary: t => `${t.groups.length} 个策略组` },
+  rules: { label: '规则', fields: ['rulesBefore', 'ruleSets', 'rulesAfter'], summary: t => `${t.ruleSets.length} 个规则集` },
+  parser: { label: 'Parser', fields: ['parser'], summary: t => t.parser.trim() ? `${t.parser.trim().split('\n').length} 行` : '空' },
+};
+
+// ---------- 状态 ----------
+const app = document.getElementById('app');
+let cfg = null, dirty = false, envPassword = false, busy = false;
+let page = 'group', pi = 0, tab = 'subs'; // page: group / templates / settings
+const previews = {};           // 订阅组 ID → 最近一次预览结果
+const ui = { previewUA: UA_PRESETS[0] };
+const openItems = new WeakSet(); // 当前展开的行
+const cur = () => cfg.profiles[pi];
+const clone = v => JSON.parse(JSON.stringify(v));
+
+// ---------- 基础工具 ----------
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else if (v === true) el.setAttribute(k, '');
+    else if (v !== false && v != null) el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat(Infinity)) if (kid != null && kid !== false) el.append(kid);
+  return el;
+}
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+async function api(method, path, body) {
+  const res = await fetch(path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && path !== '/api/login') { boot(); throw new Error('登录已失效'); }
+  if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+  return data;
+}
+function markDirty() {
+  dirty = true;
+  const d = document.getElementById('dirty'), s = document.getElementById('save');
+  if (d) d.hidden = false;
+  if (s) s.disabled = false;
+}
+window.addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
+function copyText(text, done) {
+  navigator.clipboard.writeText(text).then(() => toast(done), () => toast('复制失败，请手动复制'));
+}
+
+// 绑定到 obj[key] 的表单控件。o.local：不属于配置的临时输入，不标记「未保存」
+function field(label, obj, key, o = {}) {
+  let input;
+  const set = v => { obj[key] = v; if (!o.local) markDirty(); if (o.onchange) o.onchange(v); };
+  if (o.type === 'checkbox') {
+    input = h('input', { type: 'checkbox', 'aria-label': o.aria, onchange: e => set(e.target.checked) });
+    input.checked = !!obj[key];
+    return label ? h('label', { class: 'c' }, input, label) : input;
+  }
+  if (o.options) {
+    input = h('select', { onchange: e => set(e.target.value) }, o.options.map(([v, t]) => h('option', { value: v }, t)));
+    input.value = obj[key] ?? '';
+  } else if (o.type === 'textarea') {
+    input = h('textarea', { rows: o.rows || 6, placeholder: o.placeholder, spellcheck: 'false', oninput: e => set(o.lines ? e.target.value.split('\n').map(s => s.trim()).filter(Boolean) : e.target.value) });
+    input.value = o.lines ? (obj[key] || []).join('\n') : (obj[key] ?? '');
+  } else {
+    input = h('input', { type: o.type || 'text', placeholder: o.placeholder, list: o.list, min: o.min, spellcheck: 'false',
+      oninput: e => set(o.type === 'number' ? (parseInt(e.target.value, 10) || 0) : e.target.value) });
+    input.value = obj[key] ?? '';
+  }
+  if (!label) return input;
+  return h('label', { class: 'f' + (o.wide ? ' wide' : '') }, label, input);
+}
+function listButtons(list, i) {
+  const move = d => { const j = i + d; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; markDirty(); render(); };
+  return [
+    h('button', { class: 'sm', title: '上移', 'aria-label': '上移', onclick: () => move(-1), disabled: i === 0 }, '↑'),
+    h('button', { class: 'sm', title: '下移', 'aria-label': '下移', onclick: () => move(1), disabled: i === list.length - 1 }, '↓'),
+    h('button', { class: 'sm danger', onclick: () => { list.splice(i, 1); markDirty(); render(); } }, '删除'),
+  ];
+}
+const datalist = (id, values) => h('datalist', { id }, values.map(v => h('option', { value: v })));
+const policyNames = () => [...cur().groups.map(g => g.name).filter(Boolean), 'DIRECT', 'REJECT'];
+const empty = (title, text) => h('div', { class: 'empty' }, h('b', {}, title), text);
+
+// 可展开的行。o: { name, lead, chips, status, controls, off, body(nameEl) }
+function item(obj, o) {
+  const open = openItems.has(obj);
+  const nameEl = h('span', { class: 'item-name' }, o.name || '(未命名)');
+  const stop = e => e.stopPropagation();
+  const head = h('div', { class: 'item-head', role: 'button', tabindex: 0, 'aria-expanded': String(open),
+    onclick: () => { open ? openItems.delete(obj) : openItems.add(obj); render(); },
+    onkeydown: e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === head) { e.preventDefault(); head.click(); } } },
+    h('span', { class: 'chev', 'aria-hidden': 'true' }),
+    o.lead && h('span', { onclick: stop, onkeydown: stop, style: 'display:inline-flex' }, o.lead),
+    nameEl, (o.chips || []).filter(Boolean).map(c => h('span', { class: 'chip' }, c)), o.status,
+    h('span', { class: 'item-ctl', onclick: stop, onkeydown: stop }, o.controls));
+  return h('div', { class: 'item' + (open ? ' open' : '') + (o.off ? ' off' : '') }, head, open && h('div', { class: 'item-body' }, o.body(nameEl)));
+}
+
+// 对话框。build(close) 返回内容；actions: [{ label, primary, onclick(close) }]
+function dialog(title, build, actions) {
+  const dlg = h('dialog', {});
+  const close = () => { dlg.close(); dlg.remove(); };
+  dlg.addEventListener('cancel', () => dlg.remove());
+  dlg.append(h('h3', {}, title), ...[build(close)].flat(Infinity).filter(Boolean),
+    h('div', { class: 'foot' }, h('button', { onclick: close }, '取消'),
+      actions.map(a => h('button', { class: a.primary ? 'primary' : '', id: a.id, onclick: () => a.onclick(close) }, a.label))));
+  document.body.append(dlg);
+  dlg.showModal();
+  return dlg;
+}
+
+// ---------- 登录 / 初始化 ----------
+// 补齐旧数据里缺失的字段，并保证当前选中的订阅组存在
+function normalize(c) {
+  c.templates ||= [];
+  for (const t of [...c.profiles, ...c.templates]) { t.groups ||= []; t.ruleSets ||= []; t.rulesBefore ||= ''; t.rulesAfter ||= ''; t.parser ||= ''; }
+  for (const p of c.profiles) for (const s of p.subscriptions) { s.kind ||= 'remote'; s.variants ||= []; s.uaMode ||= 'fixed'; s.nodes ||= ''; }
+  pi = Math.min(pi, c.profiles.length - 1);
+  return c;
+}
+async function boot() {
+  const st = await (await fetch('/api/status')).json();
+  envPassword = st.envPassword;
+  if (st.authed) { cfg = normalize(await api('GET', '/api/config')); dirty = false; render(); }
+  else renderAuth(!st.initialized);
+}
+function renderAuth(setup) {
+  const pw = h('input', { type: 'password', placeholder: setup ? '设置管理密码（至少 6 位）' : '管理密码', autofocus: true });
+  const submit = async e => {
+    e.preventDefault();
+    try { await api('POST', setup ? '/api/setup' : '/api/login', { password: pw.value }); boot(); }
+    catch (err) { toast(err.message); }
+  };
+  app.replaceChildren(h('form', { class: 'card center', onsubmit: submit },
+    h('h3', {}, setup ? '首次使用：设置管理密码' : '订阅合并 · 登录'),
+    h('p', { class: 'hint' }, setup ? '该密码用于登录管理页面，请妥善保存。' : '请输入管理密码。'),
+    pw, h('button', { class: 'primary', type: 'submit' }, setup ? '保存并进入' : '登录')));
+}
+async function save() {
+  try { cfg = normalize(await api('PUT', '/api/config', cfg)); dirty = false; render(); toast('已保存修改'); return true; }
+  catch (err) { toast('保存失败：' + err.message); return false; }
+}
+
+// ---------- 框架：左栏 + 工作区 ----------
+function go(p, i) { page = p; if (i != null) pi = i; render(); window.scrollTo(0, 0); }
+function rail() {
+  const brand = h('div', { class: 'brand' });
+  // 两条线汇成一条：合并
+  brand.innerHTML = '<svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5c6 0 6 6 10 6h6M3 17c6 0 6-6 10-6"/></svg>';
+  brand.append('订阅合并');
+  const on = (p, i) => page === p && (i == null || i === pi);
+  return h('aside', { class: 'rail' }, brand,
+    h('div', { class: 'rail-label' }, '订阅组'),
+    h('div', { class: 'glist' },
+      cfg.profiles.map((p, i) => h('button', { class: 'gitem' + (on('group', i) ? ' on' : ''), 'aria-current': on('group', i) ? 'page' : null, onclick: () => go('group', i) },
+        h('b', {}, p.name || '(未命名)'), h('small', {}, `${p.subscriptions.length} 个节点来源`))),
+      h('button', { class: 'gnew', onclick: newGroupDialog }, '+ 新建订阅组')),
+    h('div', { class: 'railnav' },
+      h('button', { class: on('templates') ? 'on' : '', onclick: () => go('templates') }, '模板'),
+      h('button', { class: on('settings') ? 'on' : '', onclick: () => go('settings') }, '全局设置'),
+      h('button', { onclick: async () => { if (dirty && !confirm('有未保存的修改，确定退出登录？')) return; dirty = false; await api('POST', '/api/logout'); boot(); } }, '退出登录')));
+}
+function saveControls() {
+  const d = h('span', { id: 'dirty', class: 'dirty' }, '有未保存的修改');
+  d.hidden = !dirty;
+  return [d, h('button', { id: 'save', class: 'primary', disabled: !dirty, onclick: save }, '保存修改')];
+}
+function render() {
+  const body = page === 'group' ? groupPage() : page === 'templates' ? templatesPage() : settingsPage();
+  app.replaceChildren(h('div', { class: 'shell' }, rail(), h('main', {}, body)));
+}
+
+// ---------- 订阅组工作区 ----------
+const GROUP_TABS = [
+  ['subs', '订阅源', p => p.subscriptions.length], ['groups', '策略组', p => p.groups.length], ['rules', '规则', p => p.ruleSets.length],
+  ['parser', 'Parser'], ['preview', '预览'], ['more', '本组设置'],
+];
+const subLink = p => `${location.origin}/sub/${p.token}`;
+function groupPage() {
+  const p = cur();
+  const views = { subs: tabSubs, groups: tabGroups, rules: tabRules, parser: tabParser, preview: tabPreview, more: tabMore };
+  const title = h('input', { class: 'title-input', type: 'text', value: p.name, 'aria-label': '订阅组名称', spellcheck: 'false', placeholder: '订阅组名称',
+    oninput: e => { p.name = e.target.value; markDirty(); document.querySelector('.gitem.on b').textContent = p.name || '(未命名)'; } });
+  return [
+    h('div', { class: 'ws-head' },
+      h('div', { class: 'ws-top' }, title,
+        h('button', { disabled: !p.token, title: p.token ? null : '保存修改后生成订阅链接', onclick: () => copyText(subLink(p), '已复制订阅链接') }, '复制订阅链接'),
+        saveControls()),
+      h('div', { class: 'tabs', role: 'tablist' }, GROUP_TABS.map(([id, name, count]) =>
+        h('button', { class: tab === id ? 'on' : '', role: 'tab', 'aria-selected': String(tab === id), onclick: () => { tab = id; render(); } },
+          name, count && h('span', { class: 'n' }, count(p)))))),
+    h('div', { class: 'content' }, views[tab](p)),
+  ];
+}
+
+function tabSubs(p) {
+  const status = Object.fromEntries((previews[p.id]?.subs || []).map(s => [s.id, s]));
+  const add = extra => {
+    const s = { id: '', name: '', enabled: true, prefix: '', include: '', exclude: '', nodes: '', url: '', uaMode: 'passthrough', userAgent: '', variants: [], unlockUrl: '', ...extra };
+    p.subscriptions.push(s); openItems.add(s); markDirty(); render();
+  };
+  return [
+    datalist('ua', UA_PRESETS), datalist('uakw', UA_KEYWORDS),
+    p.subscriptions.length === 0 ? empty('还没有节点来源', '添加订阅链接，或手动填写节点。它们会合并成这个订阅组的输出。')
+      : h('div', { class: 'list' }, p.subscriptions.map((s, i) => {
+        const st = status[s.id], manual = s.kind === 'manual';
+        return item(s, {
+          name: s.name, off: !s.enabled,
+          lead: field('', s, 'enabled', { type: 'checkbox', aria: '启用', onchange: render }),
+          chips: manual ? ['手动节点'] : [s.uaMode === 'passthrough' ? '透传 UA' : '固定 UA', s.variants.length > 0 && `专用链接 ${s.variants.length}`, s.unlockUrl.trim() && '需解锁'],
+          status: st && (st.error ? h('span', { class: 'tag err', title: st.error }, (st.stale ? `失败，用缓存 ${st.used} 个：` : '失败：') + st.error)
+            : h('span', { class: 'tag ok' }, `${st.used} / ${st.count} 个节点`)),
+          controls: listButtons(p.subscriptions, i),
+          body: nameEl => h('div', { class: 'grid' },
+            field('名称', s, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
+            manual ? field('节点（Clash YAML 数组，或每行一条 ss / vmess / trojan / vless / hysteria2 分享链接）', s, 'nodes', { type: 'textarea', rows: 8, wide: true,
+              placeholder: '- {name: 我的节点, type: ss, server: 1.2.3.4, port: 8388, cipher: aes-256-gcm, password: xxx}\n或\nss://…#节点名' }) : [
+              field('拉取上游时使用的 UA', s, 'uaMode', { options: [['passthrough', '透传客户端的 UA'], ['fixed', '固定 UA']], onchange: render }),
+              field(s.uaMode === 'passthrough' ? '客户端没带 UA 时使用' : 'User-Agent', s, 'userAgent', { list: 'ua', placeholder: '默认 clash-verge/v2.4.2' }),
+              field('订阅链接', s, 'url', { wide: true, placeholder: s.variants.length ? '默认链接。留空表示只给下面匹配到的客户端提供节点' : 'https://…' }),
+              h('div', { class: 'wide variants' },
+                h('div', { class: 'sublabel' }, '专用链接（可选）：厂商给不同软件提供不同链接时，按客户端 UA 选用。自上而下取第一条匹配的，都不匹配用上面的订阅链接。'),
+                s.variants.map((v, j) => h('div', { class: 'vrow' },
+                  field('', v, 'match', { list: 'uakw', placeholder: '客户端 UA 包含（正则，不分大小写）' }),
+                  field('', v, 'url', { placeholder: '这类客户端专用的订阅链接' }),
+                  h('button', { class: 'sm danger', onclick: () => { s.variants.splice(j, 1); markDirty(); render(); } }, '删除'))),
+                h('button', { class: 'sm', onclick: () => { s.variants.push({ match: '', url: '' }); markDirty(); render(); } }, '+ 添加专用链接')),
+              field('解锁地址（可选，每次拉取前先访问一次）', s, 'unlockUrl', { wide: true, placeholder: 'https://…' }),
+            ],
+            field('节点名前缀（可选）', s, 'prefix', { placeholder: '例：[机场A] ' }),
+            field('只保留匹配的节点（正则，可选）', s, 'include', { placeholder: '例：香港|日本' }),
+            field('排除匹配的节点（正则，可选）', s, 'exclude', { placeholder: '例：过期|剩余|官网' })),
+        });
+      })),
+    h('div', { class: 'row' },
+      h('button', { onclick: () => add({ kind: 'remote', name: '订阅 ' + (p.subscriptions.length + 1) }) }, '+ 添加订阅链接'),
+      h('button', { onclick: () => add({ kind: 'manual', name: '手动节点' }) }, '+ 添加手动节点')),
+    h('p', { class: 'hint', style: 'margin-top:16px' }, '「客户端」指用本组订阅链接来更新的软件。透传 UA 时，客户端用什么 UA 来拉取，就用什么 UA 去拉上游。相同链接和 UA 的结果会缓存一段时间，可在「全局设置」里调整。'),
+  ];
+}
+
+// 「套用模板」「存为模板」工具栏
+function toolbar(hint, kind) {
+  return h('div', { class: 'toolbar' }, h('p', { class: 'hint' }, hint),
+    h('div', { class: 'row' },
+      h('button', { onclick: () => applyTemplateDialog(kind) }, '套用模板'),
+      h('button', { onclick: () => saveTemplateDialog(kind) }, '存为模板')));
+}
+function applyTemplateDialog(kind) {
+  const K = KINDS[kind], list = cfg.templates.filter(t => t.kind === kind);
+  let picked = list[0];
+  const pickEl = h('div', { class: 'pick' });
+  const draw = () => pickEl.replaceChildren(...list.map(t => h('button', { class: t === picked ? 'on' : '', onclick: () => { picked = t; draw(); } }, h('b', {}, t.name), h('span', { class: 'chip' }, K.summary(t)))));
+  draw();
+  dialog(`套用${K.label}模板`, () => list.length === 0
+    ? h('p', { class: 'hint' }, `还没有${K.label}模板。在任意订阅组里把${K.label}配置好，点「存为模板」就能在这里选用。`)
+    : [h('p', { class: 'hint' }, `模板内容会复制到「${cur().name}」，替换它现在的${K.label}。之后再改，模板和订阅组互不影响。`), pickEl],
+  list.length === 0 ? [] : [{ label: '套用并替换', primary: true, onclick: close => {
+    for (const f of K.fields) cur()[f] = clone(picked[f]);
+    markDirty(); close(); render(); toast(`已套用「${picked.name}」`);
+  } }]);
+}
+function saveTemplateDialog(kind) {
+  const K = KINDS[kind], draft = { name: `${cur().name}的${K.label}` };
+  dialog(`把当前${K.label}存为模板`, () => [
+    h('p', { class: 'hint' }, `保存「${cur().name}」当前的${K.label}，供其他订阅组套用。用已有模板的名字会覆盖它。`),
+    field('模板名称', draft, 'name', { local: true }),
+  ], [{ label: '存为模板', primary: true, onclick: close => {
+    const name = draft.name.trim();
+    if (!name) return toast('请填写模板名称');
+    const old = cfg.templates.find(t => t.kind === kind && t.name === name);
+    if (old && !confirm(`已有同名模板「${name}」，覆盖它？`)) return;
+    const tpl = old || { id: '', kind, name, groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '' };
+    for (const f of K.fields) tpl[f] = clone(cur()[f]);
+    if (!old) cfg.templates.push(tpl);
+    markDirty(); close(); render(); toast('已存为模板，保存修改后生效');
+  } }]);
+}
+function newGroupDialog() {
+  const opts = kind => [...cfg.templates.filter(t => t.kind === kind).map(t => [String(cfg.templates.indexOf(t)), t.name]), ['', '空白']];
+  const first = kind => opts(kind)[0][0];
+  const draft = { name: '订阅组 ' + (cfg.profiles.length + 1), groups: first('groups'), rules: first('rules') };
+  dialog('新建订阅组', () => [
+    h('p', { class: 'hint' }, '每个订阅组有自己的节点来源、策略组、规则和订阅链接。策略组和规则可以先从模板复制一份，之后随时修改。'),
+    field('名称', draft, 'name', { local: true }),
+    field('策略组', draft, 'groups', { options: opts('groups'), local: true }),
+    field('规则', draft, 'rules', { options: opts('rules'), local: true }),
+  ], [{ label: '新建订阅组', primary: true, onclick: close => {
+    const p = { id: '', name: draft.name.trim() || '未命名', token: '', fileName: '', subscriptions: [], groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '' };
+    for (const kind of ['groups', 'rules']) if (draft[kind] !== '') for (const f of KINDS[kind].fields) p[f] = clone(cfg.templates[+draft[kind]][f]);
+    cfg.profiles.push(p); markDirty(); close(); tab = 'subs'; go('group', cfg.profiles.length - 1);
+  } }]);
+}
+
+function groupSummary(g) {
+  const fixed = (g.extra || []).length;
+  const nodes = g.nodes === 'all' ? '全部节点' : g.nodes === 'filter' ? '正则筛选节点' : '';
+  return [nodes, fixed > 0 && `固定成员 ${fixed}`].filter(Boolean);
+}
+function tabGroups(p) {
+  return [
+    toolbar('策略组按列表顺序输出。「固定成员」可填其他策略组名、DIRECT、REJECT 或具体节点名，排在节点之前。', 'groups'),
+    p.groups.length === 0 ? empty('还没有策略组', '套用一个模板，或从空白开始添加。')
+      : h('div', { class: 'list' }, p.groups.map((g, i) => item(g, {
+        name: g.name,
+        chips: [GROUP_TYPES.find(t => t[0] === g.type)?.[1] || g.type, ...groupSummary(g)],
+        controls: listButtons(p.groups, i),
+        body: nameEl => h('div', { class: 'grid' },
+          field('名称', g, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
+          field('类型', g, 'type', { options: GROUP_TYPES, onchange: render }),
+          field('包含节点', g, 'nodes', { options: NODE_MODES, onchange: render }),
+          g.nodes === 'filter' && field('节点筛选正则', g, 'filter', { placeholder: '例：香港|HK|🇭🇰' }),
+          g.type !== 'select' && field('测速地址', g, 'testUrl', { placeholder: 'https://www.gstatic.com/generate_204' }),
+          g.type !== 'select' && field('测速间隔（秒）', g, 'interval', { type: 'number', min: 0 }),
+          field('固定成员（每行一个）', g, 'extra', { type: 'textarea', lines: true, rows: 3, wide: true })),
+      }))),
+    h('button', { onclick: () => { const g = { name: '', type: 'select', extra: [], nodes: 'filter', filter: '', testUrl: '', interval: 300 }; p.groups.push(g); openItems.add(g); markDirty(); render(); } }, '+ 添加策略组'),
+  ];
+}
+
+function tabRules(p) {
+  const add = { src: 'bm7', name: '', policy: policyNames()[0] };
+  const nameList = datalist('rsnames', RULE_SOURCES[add.src].names);
+  const addSet = () => {
+    const src = RULE_SOURCES[add.src], n = add.name.trim();
+    if (!n) return toast('请填写规则名称');
+    const behavior = src.behavior(n);
+    p.ruleSets.push({ name: src.id(n), url: src.url(n), behavior, format: src.format, policy: add.policy, noResolve: behavior === 'ipcidr', enabled: true });
+    markDirty(); render();
+  };
+  return [
+    datalist('policies', policyNames()),
+    toolbar('最终规则顺序：前置规则 → 规则集（按下表顺序）→ 后置规则。Clash 自上而下匹配，命中即止。', 'rules'),
+    h('div', { class: 'card' }, h('h3', {}, '前置规则'), h('p', { class: 'hint' }, '每行一条，例：DOMAIN-SUFFIX,example.com,DIRECT'),
+      field('', p, 'rulesBefore', { type: 'textarea', rows: 4 })),
+    h('div', { class: 'card' }, h('h3', {}, '第三方规则集'),
+      h('p', { class: 'hint' }, '以 rule-providers 方式输出，由客户端自行下载更新。可从预设快速添加，也可手填任意规则 URL。'),
+      h('div', { class: 'row', style: 'margin-bottom:10px' }, nameList,
+        h('div', { style: 'flex:2 1 220px' }, field('', add, 'src', { local: true, options: Object.entries(RULE_SOURCES).map(([k, v]) => [k, v.label]), onchange: v => nameList.replaceChildren(...RULE_SOURCES[v].names.map(n => h('option', { value: n }))) })),
+        h('div', { style: 'flex:1 1 140px' }, field('', add, 'name', { local: true, list: 'rsnames', placeholder: '规则名，如 OpenAI' })),
+        h('div', { style: 'flex:1 1 140px' }, field('', add, 'policy', { local: true, list: 'policies', placeholder: '策略' })),
+        h('button', { onclick: addSet }, '+ 从预设添加'),
+        h('button', { onclick: () => { p.ruleSets.push({ name: '', url: '', behavior: 'classical', format: 'yaml', policy: policyNames()[0], noResolve: false, enabled: true }); markDirty(); render(); } }, '+ 手动添加')),
+      p.ruleSets.length > 0 && h('div', { class: 'tblwrap' }, h('table', {},
+        h('tr', {}, ['启用', '名称', 'URL', '类型', '格式', '策略', 'no-resolve', ''].map(t => h('th', {}, t))),
+        p.ruleSets.map((r, i) => h('tr', {},
+          h('td', {}, field('', r, 'enabled', { type: 'checkbox', aria: '启用' })),
+          h('td', { style: 'width:130px' }, field('', r, 'name')),
+          h('td', {}, field('', r, 'url')),
+          h('td', { style: 'width:105px' }, field('', r, 'behavior', { options: [['classical', 'classical'], ['domain', 'domain'], ['ipcidr', 'ipcidr']] })),
+          h('td', { style: 'width:80px' }, field('', r, 'format', { options: [['yaml', 'yaml'], ['text', 'text'], ['mrs', 'mrs']] })),
+          h('td', { style: 'width:140px' }, field('', r, 'policy', { list: 'policies' })),
+          h('td', {}, field('', r, 'noResolve', { type: 'checkbox', aria: 'no-resolve' })),
+          h('td', { style: 'white-space:nowrap' }, listButtons(p.ruleSets, i))))))),
+    h('div', { class: 'card' }, h('h3', {}, '后置规则'), h('p', { class: 'hint' }, '通常放 GEOIP 与兜底的 MATCH 规则。'),
+      field('', p, 'rulesAfter', { type: 'textarea', rows: 4 })),
+  ];
+}
+
+function tabParser(p) {
+  return [
+    toolbar('CFW Parsers 语法，在节点、策略组、规则都生成之后执行，可引用本组的全部节点（含手动节点）。支持 prepend-/append-/mix- 系列和 commands（= 覆盖、+ 插入、结尾 - 删除、(名称) 定位、[]proxyNames|正则）。', 'parser'),
+    field('', p, 'parser', { type: 'textarea', rows: 20, placeholder: PARSER_EXAMPLE }),
+    h('div', { class: 'gap' }),
+    h('div', { class: 'row' },
+      h('button', { class: 'sm', onclick: () => { if (!p.parser.trim() || confirm('覆盖当前 Parser 内容？')) { p.parser = PARSER_EXAMPLE; markDirty(); render(); } } }, '填入示例'),
+      h('span', { class: 'hint', style: 'margin:0' }, '执行失败的命令会在「预览」的警告里列出。')),
+  ];
+}
+
+function tabPreview(p) {
+  const preview = previews[p.id];
+  const run = async refresh => {
+    if (busy) return;
+    if ((dirty || !p.id) && !(await save())) return;
+    busy = true; toast('正在生成…');
+    const id = cur().id;
+    try {
+      previews[id] = await api('GET', `/api/preview?profile=${id}&ua=${encodeURIComponent(ui.previewUA)}${refresh ? '&refresh=1' : ''}`);
+      toast(`生成成功，共 ${previews[id].total} 个节点`);
+    } catch (err) { toast('生成失败：' + err.message); }
+    busy = false; render();
+  };
+  return [
+    datalist('ua', UA_PRESETS),
+    h('p', { class: 'hint' }, '模拟下面这个 UA 的客户端来拉取本组的订阅链接，流程与真实拉取完全相同。预览前会先保存修改。换一个 UA 可以检查透传和专用链接是否按预期生效。'),
+    h('div', { class: 'row', style: 'margin-bottom:16px' },
+      h('div', { style: 'flex:1 1 240px' }, field('', ui, 'previewUA', { list: 'ua', local: true, placeholder: '模拟的客户端 UA' })),
+      h('button', { class: 'primary', onclick: () => run(false) }, '生成预览'),
+      h('button', { onclick: () => run(true) }, '跳过缓存重新拉取')),
+    !preview ? empty('还没有预览', '点「生成预览」查看这个订阅组最终输出的配置。') : [
+      preview.subs.length > 0 && h('div', { class: 'card' }, h('div', { class: 'tblwrap' }, h('table', {},
+        h('tr', {}, ['节点来源', '结果', '使用的 UA', '使用的链接'].map(t => h('th', {}, t))),
+        preview.subs.map(s => h('tr', {},
+          h('td', {}, s.name),
+          h('td', {}, s.error ? h('span', { class: 'tag err', title: s.error }, (s.stale ? `失败，用缓存 ${s.used} 个：` : '失败：') + s.error) : h('span', { class: 'tag ok' }, `${s.used} / ${s.count} 个节点`)),
+          h('td', { class: 'clip', title: s.ua }, s.ua || '不适用'),
+          h('td', { class: 'clip', title: s.url }, s.url || '不适用')))))),
+      preview.warnings.length > 0 && h('div', { class: 'warnbox' }, preview.warnings.map(w => h('div', {}, w))),
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'hint', style: 'margin:0 auto 0 0' }, `共 ${preview.total} 个节点`),
+        h('button', { class: 'sm', onclick: () => copyText(preview.yaml, '已复制配置内容') }, '复制配置内容')),
+      h('pre', {}, preview.yaml),
+    ],
+  ];
+}
+
+function tabMore(p) {
+  return [
+    h('div', { class: 'card' }, h('h3', {}, '订阅链接'),
+      p.token ? [
+        h('p', { class: 'hint' }, '填入 Clash / mihomo 系客户端，输出为 Clash 格式。链接后加 ?refresh=1 可跳过缓存重新拉取上游。'),
+        h('div', { class: 'row' }, h('input', { type: 'text', readonly: true, value: subLink(p), style: 'flex:1 1 300px', onfocus: e => e.target.select() }),
+          h('button', { onclick: () => copyText(subLink(p), '已复制订阅链接') }, '复制'),
+          h('button', { class: 'danger', onclick: async () => { if (!confirm('重置后旧链接立即失效，确定？')) return; if (dirty && !(await save())) return; cfg = normalize(await api('POST', '/api/token', { profile: cur().id })); render(); toast('已重置链接'); } }, '重置链接')),
+      ] : h('p', { class: 'hint', style: 'margin:0' }, '保存修改后生成这个订阅组的订阅链接。')),
+    h('div', { class: 'card' }, h('h3', {}, '显示名称'),
+      h('p', { class: 'hint' }, '客户端里显示的配置名称。留空则使用订阅组名称。'),
+      field('', p, 'fileName', { placeholder: p.name })),
+    h('div', { class: 'card' }, h('h3', {}, '复制或删除'),
+      h('p', { class: 'hint' }, '复制会得到一个内容相同、链接不同的新订阅组。删除在保存修改后生效，它的订阅链接随之失效。'),
+      h('div', { class: 'row' },
+        h('button', { onclick: () => {
+          const c = clone(p); c.id = ''; c.token = ''; c.name = p.name + ' 副本'; c.subscriptions.forEach(s => { s.id = ''; });
+          cfg.profiles.push(c); markDirty(); tab = 'subs'; go('group', cfg.profiles.length - 1);
+        } }, '复制这个订阅组'),
+        h('button', { class: 'danger', disabled: cfg.profiles.length < 2, title: cfg.profiles.length < 2 ? '至少保留一个订阅组' : null,
+          onclick: () => { if (!confirm(`删除订阅组「${p.name}」？`)) return; cfg.profiles.splice(pi, 1); pi = Math.max(0, pi - 1); tab = 'subs'; markDirty(); render(); } }, '删除这个订阅组'))),
+  ];
+}
+
+// ---------- 模板 ----------
+function templatesPage() {
+  const section = kind => {
+    const K = KINDS[kind], list = cfg.templates.filter(t => t.kind === kind);
+    return [
+      h('div', { class: 'section-title' }, `${K.label} 模板`.replace(/([一-鿿]) 模板/, '$1模板')),
+      list.length === 0 ? empty(`还没有${K.label}模板`, `在订阅组的「${K.label}」页点「存为模板」。`)
+        : h('div', { class: 'list' }, list.map(t => item(t, {
+          name: t.name, chips: [K.summary(t)],
+          controls: h('button', { class: 'sm danger', onclick: () => { if (!confirm(`删除模板「${t.name}」？已套用过它的订阅组不受影响。`)) return; cfg.templates.splice(cfg.templates.indexOf(t), 1); markDirty(); render(); } }, '删除'),
+          body: nameEl => h('div', { class: 'grid' },
+            field('模板名称', t, 'name', { wide: true, onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
+            kind === 'parser' ? field('内容', t, 'parser', { type: 'textarea', rows: 12, wide: true }) : h('div', { class: 'wide' },
+              h('div', { class: 'sublabel' }, `包含的${kind === 'groups' ? '策略组' : '规则集'}。要修改内容：套用到某个订阅组，改好后用同一个名称「存为模板」覆盖。`),
+              h('div', { class: 'chips' }, (kind === 'groups' ? t.groups : t.ruleSets).map(x => h('span', { class: 'chip' }, x.name || '(未命名)'))))),
+        }))),
+    ];
+  };
+  return [
+    h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '模板'), saveControls())),
+    h('div', { class: 'content' },
+      h('p', { class: 'hint' }, '模板是可以重复套用的策略组、规则和 Parser。套用是复制一份到订阅组里，之后修改模板不会影响已经套用过的订阅组。'),
+      section('groups'), section('rules'), section('parser')),
+  ];
+}
+
+// ---------- 全局设置 ----------
+function settingsPage() {
+  const pw = { old: '', new: '' };
+  return [
+    h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '全局设置'), saveControls())),
+    h('div', { class: 'content' },
+      h('div', { class: 'card' }, h('h3', {}, '拉取与缓存'),
+        h('p', { class: 'hint' }, '缓存按「订阅 + 实际链接 + 实际 UA」分别保存：同一个 UA 在缓存时间内重复拉取不会再请求上游。上游拉取失败时，只会继续使用同一链接和 UA 上一次成功的结果。'),
+        h('div', { class: 'grid' },
+          field('上游订阅缓存时间（分钟，0 为每次都拉取）', cfg, 'cacheMinutes', { type: 'number', min: 0 }),
+          field('建议客户端更新间隔（小时）', cfg, 'updateInterval', { type: 'number', min: 1 }))),
+      h('div', { class: 'card' }, h('h3', {}, '基础配置'),
+        h('p', { class: 'hint' }, '所有订阅组输出配置的基础部分（端口、DNS 等）。其中的 proxies / proxy-groups / rules 会被生成内容覆盖。'),
+        field('', cfg, 'baseConfig', { type: 'textarea', rows: 16 })),
+      h('div', { class: 'card' }, h('h3', {}, '管理密码'),
+        envPassword ? h('p', { class: 'hint', style: 'margin:0' }, '密码由环境变量 ADMIN_PASSWORD 管理，如需修改请更改部署配置。') : [
+          h('div', { class: 'grid' }, field('原密码', pw, 'old', { type: 'password', local: true }), field('新密码（至少 6 位）', pw, 'new', { type: 'password', local: true })),
+          h('div', { class: 'gap' }),
+          h('button', { onclick: async () => { try { await api('POST', '/api/password', pw); toast('密码已修改'); render(); } catch (err) { toast(err.message); } } }, '修改密码')])),
+  ];
+}
+
+boot().catch(err => { app.textContent = '加载失败：' + err.message; });
+</script>
+</body>
+</html>
