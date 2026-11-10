@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -260,6 +261,12 @@ func validateConfig(c *Config, tokens map[string]string) error {
 	if len(c.Profiles) == 0 {
 		return errors.New("至少需要保留一个订阅组")
 	}
+	for _, ua := range []*string{&c.UserAgent, &c.UnlockUserAgent} {
+		*ua = strings.TrimSpace(*ua)
+		if len(*ua) > 256 || strings.ContainsFunc(*ua, unicode.IsControl) {
+			return errors.New("全局设置里的 UA 不能超过 256 个字符，也不能包含换行等控制字符")
+		}
+	}
 	// ID 由服务端生成：订阅 ID 用作缓存文件名，订阅组 ID 用于保留令牌
 	ids := map[string]bool{}
 	fixID := func(id *string) {
@@ -291,9 +298,7 @@ func validateConfig(c *Config, tokens map[string]string) error {
 		for i := range p.Subscriptions {
 			s := &p.Subscriptions[i]
 			fixID(&s.ID)
-			if s.Variants == nil {
-				s.Variants = []URLVariant{}
-			}
+			s.LegacyVariants, s.LegacyUserAgent = nil, ""
 			if s.Kind == "manual" {
 				if _, err := parseCustomProxies(s.Nodes); err != nil {
 					return errors.New("「" + p.Name + "」的「" + s.Name + "」: " + err.Error())
@@ -301,11 +306,7 @@ func validateConfig(c *Config, tokens map[string]string) error {
 				continue
 			}
 			s.Kind = "remote"
-			urls := []string{s.URL, s.UnlockURL}
-			for _, v := range s.Variants {
-				urls = append(urls, v.URL)
-			}
-			for _, u := range urls {
+			for _, u := range []string{s.URL, s.UnlockURL} {
 				if u = strings.TrimSpace(u); u == "" {
 					continue
 				}
@@ -400,7 +401,7 @@ func findProfile(c Config, match func(Profile) bool) *Profile {
 	return nil
 }
 
-// clientUA 取请求的 UA 作为透传 / 链接匹配的依据，限制长度以免被用来撑大缓存键。
+// clientUA 取请求的 UA 作为透传的依据，限制长度以免被用来撑大缓存键。
 func clientUA(ua string) string {
 	if ua = strings.TrimSpace(ua); len(ua) > 256 {
 		ua = ua[:256]

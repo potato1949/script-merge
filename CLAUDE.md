@@ -44,7 +44,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 数据模型（`store.go`）
 
-`Config` 下有 `Profiles[]`（彼此完全独立，各自带节点来源 `Subscriptions`、`Groups`、内嵌的 `Rules`、`Parser`）、`Templates[]`，以及全局的 `BaseConfig` / `CacheMinutes` / `UpdateInterval`。
+`Config` 下有 `Profiles[]`（彼此完全独立，各自带节点来源 `Subscriptions`、`Groups`、内嵌的 `Rules`、`Parser`）、`Templates[]`，以及全局的 `BaseConfig` / `CacheMinutes` / `UpdateInterval` / `UserAgent`（固定 UA）/ `UnlockUserAgent`（解锁 UA）。
 
 - 节点来源 `Subscription.Kind`：`remote`（远程订阅）或 `manual`（手填节点）；空值等同 `remote`
 - **模板是复制语义**：套用 = 把模板内容复制进订阅组，之后互不影响。服务端只存 `Templates`，套用和另存完全是前端对 `cfg` 对象的操作，`Build` 不知道模板的存在
@@ -56,16 +56,16 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 基础配置 → 并发处理节点来源 → 过滤 / 加前缀 / 重名加序号 → 生成策略组 → 生成规则 → `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
 
-- `clientUA` 是来拉合并链接的客户端的 UA。`resolveSource` 用它决定每个订阅本次用哪个上游链接（`Variants` 自上而下第一条匹配）和哪个 UA（透传或固定）
-- 输出始终是 Clash YAML，不随客户端变化
+- `clientUA` 是来拉合并链接的客户端的 UA。`resolveUA` 用它决定每个订阅本次拉上游用哪个 UA：订阅的 `UAMode` 是透传就用 `clientUA`，否则用全局的固定 UA（`Config.UserAgent`，空则 `defaultUA`）。每个订阅只有一个上游链接，也没有自己的 UA
+- 上游内容只认 Clash YAML 或分享链接列表；输出始终是 Clash YAML，不随客户端变化。其他客户端格式的方向见 `docs/CLIENT-SUPPORT.md`（加输出侧的渲染器，不加输入解析器）
 - 内存里的配置树统一用 `map[string]any` / `[]any`，不要放 `[]map[string]any` 或 `[]string`：Parser 的路径命令和 `toNode` 只认前者
 - 面向用户的正则一律走 `compileRegex` / `optRegex`（regexp2，支持前瞻断言，带匹配超时），不要用标准库 `regexp`
 
 ### 上游拉取与缓存（`fetch.go`）
 
-- 缓存键 = 订阅 ID + hash(实际链接 + 实际 UA + 解锁地址)。给 `Subscription` 加了影响拉取结果的字段，必须加进 `cacheKey`
+- 缓存键 = 订阅 ID + hash(实际链接 + 实际 UA + 解锁地址，有解锁地址时再加解锁 UA)。加了影响拉取结果的字段（不论在 `Subscription` 还是全局），必须加进 `cacheKey`
 - 失败时只回退到**同一个键**的旧缓存，不跨链接 / UA 回退（这是用户明确要求的行为）
-- 解锁地址是一次独立的普通 GET，固定用 Chrome UA，不与订阅请求共享 Cookie（同样是用户明确要求）
+- 解锁地址是一次独立的普通 GET，UA 用全局的解锁 UA（`Config.UnlockUserAgent`，空则 `chromeUA`），不随订阅的 UA 模式变化，不与订阅请求共享 Cookie（同样是用户明确要求）
 - 订阅 ID 用作缓存文件名，`validateConfig` 只接受服务端生成的 16 位十六进制 ID
 
 ### 配置保存与令牌（`main.go`）
@@ -74,7 +74,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 迁移（`store.go` 的 `Config.migrate`）
 
-`Config.Version` 是结构版本（当前 `configVersion = 3`）。`OpenStore` 时自动迁移，原文件存为 `config.json.bak`。
+`Config.Version` 是结构版本（当前 `configVersion = 4`）。`OpenStore` 时自动迁移，原文件存为 `config.json.bak`。
 
 - 只是**加字段**不需要迁移，但零值必须是合理的默认行为
 - **改结构**：`configVersion` 加一，在 `migrate` 里加一段，旧字段以 `Legacy*` + `omitempty` 保留，并在 `TestMigrateLegacyConfig` 补一个旧文件样例

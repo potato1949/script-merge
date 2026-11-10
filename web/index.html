@@ -111,9 +111,7 @@ button:disabled { opacity: .4; cursor: default; }
 .ws-top input.title-input { flex: 1; width: auto; min-width: 0; margin: 0 auto 0 -9px; padding: 3px 8px; border: 1px solid transparent; border-radius: 8px; background: none; font: 500 28px/1.2 var(--serif); letter-spacing: .01em; text-overflow: ellipsis; }
 .ws-top input.title-input:hover { border-color: var(--line-strong); }
 .ws-top input.title-input:focus-visible { border-color: var(--line-strong); background: var(--surface); outline-offset: 0; }
-.variants { border-left: 2px solid var(--line); padding-left: 12px; }
 .sublabel { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; max-width: 68ch; }
-.vrow { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto; gap: 8px; align-items: center; margin-bottom: 6px; }
 
 /* 状态与输出 */
 .tag { flex: none; font-size: 12.5px; padding: 2px 10px; border-radius: 99px; background: var(--sunken); color: var(--muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -166,8 +164,6 @@ dialog label.f + label.f { margin-top: 12px; }
   .toolbar { flex-direction: column; gap: 8px; }
   .item-head { flex-wrap: wrap; }
   .item-body { padding-left: 16px; }
-  .vrow { grid-template-columns: minmax(0, 1fr) auto; }
-  .vrow > :nth-child(2) { grid-column: 1; grid-row: 2; }
 }
 </style>
 </head>
@@ -183,7 +179,9 @@ const UA_PRESETS = [
   'Shadowrocket/2615 CFNetwork/1568.200.51 Darwin/24.1.0', 'Quantumult%20X/1.5.2 (iPhone; iOS 18.1)',
   'Surge iOS/3400', 'Loon/3.2.4 CFNetwork/1568.200.51 Darwin/24.1.0', 'sing-box 1.12.0', 'v2rayN/7.15.0', 'v2rayNG/1.10.20',
 ];
-const UA_KEYWORDS = ['clash|mihomo|stash|flclash', 'shadowrocket', 'quantumult', 'surge', 'loon', 'sing-box', 'v2ray'];
+// 仅用于输入框的占位提示，实际默认值在 fetch.go 的 defaultUA / chromeUA，改动时两边一起改
+const DEFAULT_UA = 'clash-verge/v2.4.2';
+const DEFAULT_UNLOCK_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const RULE_SOURCES = {
   bm7: { label: 'blackmatrix7/ios_rule_script', format: 'yaml', behavior: () => 'classical', id: n => n,
     url: n => `https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/${n}/${n}.yaml`,
@@ -334,9 +332,9 @@ function dialog(title, build, actions) {
 // ---------- 登录 / 初始化 ----------
 // 补齐旧数据里缺失的字段，并保证当前选中的订阅组存在
 function normalize(c) {
-  c.templates ||= [];
+  c.templates ||= []; c.userAgent ||= ''; c.unlockUserAgent ||= '';
   for (const t of [...c.profiles, ...c.templates]) { t.groups ||= []; t.ruleSets ||= []; t.rulesBefore ||= ''; t.rulesAfter ||= ''; t.parser ||= ''; }
-  for (const p of c.profiles) for (const s of p.subscriptions) { s.kind ||= 'remote'; s.variants ||= []; s.uaMode ||= 'fixed'; s.nodes ||= ''; }
+  for (const p of c.profiles) for (const s of p.subscriptions) { s.kind ||= 'remote'; s.uaMode ||= 'fixed'; s.nodes ||= ''; }
   pi = Math.min(pi, c.profiles.length - 1);
   return c;
 }
@@ -418,18 +416,17 @@ function groupPage() {
 function tabSubs(p) {
   const status = Object.fromEntries((previews[p.id]?.subs || []).map(s => [s.id, s]));
   const add = extra => {
-    const s = { id: '', name: '', enabled: true, prefix: '', include: '', exclude: '', nodes: '', url: '', uaMode: 'passthrough', userAgent: '', variants: [], unlockUrl: '', ...extra };
+    const s = { id: '', name: '', enabled: true, prefix: '', include: '', exclude: '', nodes: '', url: '', uaMode: 'passthrough', unlockUrl: '', ...extra };
     p.subscriptions.push(s); openItems.add(s); markDirty(); render();
   };
   return [
-    datalist('ua', UA_PRESETS), datalist('uakw', UA_KEYWORDS),
     p.subscriptions.length === 0 ? empty('还没有节点来源', '添加订阅链接，或手动填写节点。它们会合并成这个订阅组的输出。')
       : h('div', { class: 'list' }, p.subscriptions.map((s, i) => {
         const st = status[s.id], manual = s.kind === 'manual';
         return item(s, {
           name: s.name, off: !s.enabled,
           lead: field('', s, 'enabled', { type: 'checkbox', aria: '启用', onchange: render }),
-          chips: manual ? ['手动节点'] : [s.uaMode === 'passthrough' ? '透传 UA' : '固定 UA', s.variants.length > 0 && `专用链接 ${s.variants.length}`, s.unlockUrl.trim() && '需解锁'],
+          chips: manual ? ['手动节点'] : [s.uaMode === 'passthrough' ? '透传 UA' : '固定 UA', s.unlockUrl.trim() && '需解锁'],
           status: st && (st.error ? h('span', { class: 'tag err', title: st.error }, (st.stale ? `失败，用缓存 ${st.used} 个：` : '失败：') + st.error)
             : h('span', { class: 'tag ok' }, `${st.used} / ${st.count} 个节点`)),
           controls: listButtons(p.subscriptions, i),
@@ -437,16 +434,8 @@ function tabSubs(p) {
             field('名称', s, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
             manual ? field('节点（Clash YAML 数组，或每行一条 ss / vmess / trojan / vless / hysteria2 分享链接）', s, 'nodes', { type: 'textarea', rows: 8, wide: true,
               placeholder: '- {name: 我的节点, type: ss, server: 1.2.3.4, port: 8388, cipher: aes-256-gcm, password: xxx}\n或\nss://…#节点名' }) : [
-              field('拉取上游时使用的 UA', s, 'uaMode', { options: [['passthrough', '透传客户端的 UA'], ['fixed', '固定 UA']], onchange: render }),
-              field(s.uaMode === 'passthrough' ? '客户端没带 UA 时使用' : 'User-Agent', s, 'userAgent', { list: 'ua', placeholder: '默认 clash-verge/v2.4.2' }),
-              field('订阅链接', s, 'url', { wide: true, placeholder: s.variants.length ? '默认链接。留空表示只给下面匹配到的客户端提供节点' : 'https://…' }),
-              h('div', { class: 'wide variants' },
-                h('div', { class: 'sublabel' }, '专用链接（可选）：厂商给不同软件提供不同链接时，按客户端 UA 选用。自上而下取第一条匹配的，都不匹配用上面的订阅链接。'),
-                s.variants.map((v, j) => h('div', { class: 'vrow' },
-                  field('', v, 'match', { list: 'uakw', placeholder: '客户端 UA 包含（正则，不分大小写）' }),
-                  field('', v, 'url', { placeholder: '这类客户端专用的订阅链接' }),
-                  h('button', { class: 'sm danger', onclick: () => { s.variants.splice(j, 1); markDirty(); render(); } }, '删除'))),
-                h('button', { class: 'sm', onclick: () => { s.variants.push({ match: '', url: '' }); markDirty(); render(); } }, '+ 添加专用链接')),
+              field('拉取上游时使用的 UA', s, 'uaMode', { options: [['passthrough', '透传客户端的 UA'], ['fixed', '固定 UA（全局设置）']], onchange: render }),
+              field('订阅链接（Clash 格式，或分享链接列表）', s, 'url', { wide: true, placeholder: 'https://…' }),
               field('解锁地址（可选，每次拉取前先访问一次）', s, 'unlockUrl', { wide: true, placeholder: 'https://…' }),
             ],
             field('节点名前缀（可选）', s, 'prefix', { placeholder: '例：[机场A] ' }),
@@ -457,7 +446,7 @@ function tabSubs(p) {
     h('div', { class: 'row' },
       h('button', { onclick: () => add({ kind: 'remote', name: '订阅 ' + (p.subscriptions.length + 1) }) }, '+ 添加订阅链接'),
       h('button', { onclick: () => add({ kind: 'manual', name: '手动节点' }) }, '+ 添加手动节点')),
-    h('p', { class: 'hint', style: 'margin-top:16px' }, '「客户端」指用本组订阅链接来更新的软件。透传 UA 时，客户端用什么 UA 来拉取，就用什么 UA 去拉上游。相同链接和 UA 的结果会缓存一段时间，可在「全局设置」里调整。'),
+    h('p', { class: 'hint', style: 'margin-top:16px' }, '「客户端」指用本组订阅链接来更新的软件。透传 UA 时，客户端用什么 UA 来拉取，就用什么 UA 去拉上游；客户端没带 UA 时用固定 UA。固定 UA 和缓存时间在「全局设置」里调整。'),
   ];
 }
 
@@ -605,7 +594,7 @@ function tabPreview(p) {
   };
   return [
     datalist('ua', UA_PRESETS),
-    h('p', { class: 'hint' }, '模拟下面这个 UA 的客户端来拉取本组的订阅链接，流程与真实拉取完全相同。预览前会先保存修改。换一个 UA 可以检查透传和专用链接是否按预期生效。'),
+    h('p', { class: 'hint' }, '模拟下面这个 UA 的客户端来拉取本组的订阅链接，流程与真实拉取完全相同。预览前会先保存修改。换一个 UA 可以检查透传是否按预期生效。'),
     h('div', { class: 'row', style: 'margin-bottom:16px' },
       h('div', { style: 'flex:1 1 240px' }, field('', ui, 'previewUA', { list: 'ua', local: true, placeholder: '模拟的客户端 UA' })),
       h('button', { class: 'primary', onclick: () => run(false) }, '生成预览'),
@@ -682,11 +671,14 @@ function settingsPage() {
   return [
     h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '全局设置'), saveControls())),
     h('div', { class: 'content' },
+      datalist('ua', UA_PRESETS),
       h('div', { class: 'card' }, h('h3', {}, '拉取与缓存'),
         h('p', { class: 'hint' }, '缓存按「订阅 + 实际链接 + 实际 UA」分别保存：同一个 UA 在缓存时间内重复拉取不会再请求上游。上游拉取失败时，只会继续使用同一链接和 UA 上一次成功的结果。'),
         h('div', { class: 'grid' },
           field('上游订阅缓存时间（分钟，0 为每次都拉取）', cfg, 'cacheMinutes', { type: 'number', min: 0 }),
-          field('建议客户端更新间隔（小时）', cfg, 'updateInterval', { type: 'number', min: 1 }))),
+          field('建议客户端更新间隔（小时）', cfg, 'updateInterval', { type: 'number', min: 1 }),
+          field('固定 UA（拉取订阅时使用；透传的订阅在客户端没带 UA 时也用它）', cfg, 'userAgent', { wide: true, list: 'ua', placeholder: '默认 ' + DEFAULT_UA }),
+          field('解锁 UA（访问订阅的「解锁地址」时使用）', cfg, 'unlockUserAgent', { wide: true, placeholder: '默认 ' + DEFAULT_UNLOCK_UA }))),
       h('div', { class: 'card' }, h('h3', {}, '基础配置'),
         h('p', { class: 'hint' }, '所有订阅组输出配置的基础部分（端口、DNS 等）。其中的 proxies / proxy-groups / rules 会被生成内容覆盖。'),
         field('', cfg, 'baseConfig', { type: 'textarea', rows: 16 })),

@@ -154,13 +154,15 @@ func TestURIs(t *testing.T) {
 
 func TestBuildEndToEnd(t *testing.T) {
 	var gotUA string
+	var mu sync.Mutex
+	var unlockUAs []string // 解锁地址收到的 UA，按请求顺序
 	var unlocked atomic.Bool
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/unlock":
-			if !strings.Contains(r.UserAgent(), "Chrome/") {
-				t.Errorf("解锁请求 UA = %q", r.UserAgent())
-			}
+			mu.Lock()
+			unlockUAs = append(unlockUAs, r.UserAgent())
+			mu.Unlock()
 			unlocked.Store(true)
 		case "/locked":
 			if !unlocked.Load() { // 解锁地址被访问过之后才放行
@@ -180,9 +182,10 @@ func TestBuildEndToEnd(t *testing.T) {
 	defer upstream.Close()
 
 	cfg := defaultConfig()
+	cfg.UserAgent = "ClashforWindows/0.20.39" // 全局固定 UA
 	p := &cfg.Profiles[0]
 	p.Subscriptions = []Subscription{
-		{ID: "aaaaaaaaaaaaaaaa", Name: "A", URL: upstream.URL + "/locked", UnlockURL: upstream.URL + "/unlock", Enabled: true, UserAgent: "ClashforWindows/0.20.39", Exclude: "过期"},
+		{ID: "aaaaaaaaaaaaaaaa", Name: "A", URL: upstream.URL + "/locked", UnlockURL: upstream.URL + "/unlock", Enabled: true, Exclude: "过期"},
 		{ID: "bbbbbbbbbbbbbbbb", Name: "B", URL: upstream.URL + "/plain", Enabled: true, Prefix: "[B] "},
 		{ID: "cccccccccccccccc", Name: "C", URL: upstream.URL + "/missing", Enabled: true}, // 上游 404 → 失败
 		{ID: "dddddddddddddddd", Name: "D", URL: upstream.URL + "/plain", Enabled: true},   // 与 A 重名
@@ -200,6 +203,23 @@ func TestBuildEndToEnd(t *testing.T) {
 	}
 	if gotUA != "ClashforWindows/0.20.39" {
 		t.Errorf("UA = %q", gotUA)
+	}
+	seenUnlockUAs := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), unlockUAs...)
+	}
+	if got := seenUnlockUAs(); !reflect.DeepEqual(got, []string{chromeUA}) { // 没设置解锁 UA 时用内置的 Chrome UA
+		t.Errorf("解锁请求 UA = %q", got)
+	}
+
+	// 改了全局的解锁 UA：缓存键随之改变，会重新解锁并拉取
+	cfg.UnlockUserAgent = "Unlock/1.0"
+	if _, err := Build(cfg, *p, f, "mihomo/1.0", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := seenUnlockUAs(); !reflect.DeepEqual(got, []string{chromeUA, "Unlock/1.0"}) {
+		t.Errorf("自定义解锁 UA 未生效: %q", got)
 	}
 	if res.Subs[0].Used != 1 || res.Subs[0].Error != "" || res.Subs[2].Error == "" {
 		t.Errorf("订阅状态不符: %+v", res.Subs)
@@ -257,7 +277,7 @@ func TestBuildEndToEnd(t *testing.T) {
 	}
 }
 
-func TestUAPassthroughAndVariants(t *testing.T) {
+func TestUAPassthrough(t *testing.T) {
 	hits := map[string]int{} // "路径 UA" → 次数
 	var mu sync.Mutex
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -270,12 +290,12 @@ func TestUAPassthroughAndVariants(t *testing.T) {
 
 	cfg := defaultConfig()
 	cfg.CacheMinutes = 5
+	cfg.UserAgent = "fixed/1" // 全局固定 UA：固定模式用它，透传模式下客户端没带 UA 时也用它
 	p := &cfg.Profiles[0]
 	p.Subscriptions = []Subscription{
-		{ID: "aaaaaaaaaaaaaaaa", Name: "透传", URL: upstream.URL + "/default", Enabled: true, UAMode: "passthrough", UserAgent: "fallback/1",
-			Variants: []URLVariant{{Match: "shadowrocket|quantumult", URL: upstream.URL + "/ios"}, {Match: "(", URL: upstream.URL + "/bad"}}},
-		{ID: "bbbbbbbbbbbbbbbb", Name: "固定", URL: upstream.URL + "/fixed", Enabled: true, UserAgent: "ClashforWindows/0.20.39"},
-		{ID: "cccccccccccccccc", Name: "仅专用链接", Enabled: true, Variants: []URLVariant{{Match: "^mihomo", URL: upstream.URL + "/meta"}}},
+		{ID: "aaaaaaaaaaaaaaaa", Name: "透传", URL: upstream.URL + "/default", Enabled: true, UAMode: "passthrough"},
+		{ID: "bbbbbbbbbbbbbbbb", Name: "固定", URL: upstream.URL + "/fixed", Enabled: true},
+		{ID: "cccccccccccccccc", Name: "没填链接", Enabled: true},
 	}
 	f := NewFetcher(t.TempDir())
 	nodes := func(ua string) string {
@@ -291,20 +311,16 @@ func TestUAPassthroughAndVariants(t *testing.T) {
 		}
 		return strings.Join(names, ",")
 	}
-	if got := nodes("mihomo/1.19"); got != "default,fixed,meta" {
-		t.Errorf("mihomo: %s", got)
-	}
-	if got := nodes("Shadowrocket/2615"); got != "ios,fixed" { // 第三个订阅没有匹配的链接
-		t.Errorf("shadowrocket: %s", got)
-	}
-	if got := nodes(""); got != "default,fixed" {
-		t.Errorf("无 UA: %s", got)
+	for _, ua := range []string{"mihomo/1.19", "Shadowrocket/2615", ""} {
+		if got := nodes(ua); got != "default,fixed" { // 第三个订阅没填链接，不提供节点
+			t.Errorf("UA %q: %s", ua, got)
+		}
 	}
 	nodes("mihomo/1.19") // 5 分钟内同一 UA 再拉取：全部命中缓存
 	nodes("Shadowrocket/2615")
 	want := map[string]int{
-		"/default mihomo/1.19": 1, "/meta clash-verge/v2.4.2": 1, "/ios Shadowrocket/2615": 1,
-		"/default fallback/1": 1, "/fixed ClashforWindows/0.20.39": 1, // 固定 UA 的订阅不随客户端变化，只拉一次
+		"/default mihomo/1.19": 1, "/default Shadowrocket/2615": 1, "/default fixed/1": 1, // 透传：每种 UA 各拉一次，没带 UA 时用全局固定 UA
+		"/fixed fixed/1": 1, // 固定 UA 的订阅不随客户端变化，只拉一次
 	}
 	if !reflect.DeepEqual(hits, want) {
 		t.Errorf("上游请求 = %v", hits)
@@ -320,6 +336,9 @@ func TestUAPassthroughAndVariants(t *testing.T) {
 	res, _ = Build(cfg, *p, f, "never-seen/1.0", false)
 	if st := res.Subs[0]; st.Stale || st.Error == "" || st.Used != 0 {
 		t.Errorf("不应回退到其他 UA 的缓存: %+v", st)
+	}
+	if st := res.Subs[2]; !strings.Contains(st.Error, "订阅链接") {
+		t.Errorf("没填链接的订阅应报错: %+v", st)
 	}
 }
 
@@ -386,6 +405,35 @@ func TestMigrateLegacyConfig(t *testing.T) {
 	c.Profiles[0].Groups[0].Name = "改" // 各组拿到的是独立副本
 	if c.Profiles[1].Groups[0].Name != "G" {
 		t.Errorf("订阅组之间共享了同一份策略组")
+	}
+
+	// v3：专用链接被移除，默认链接为空的订阅改用第一条有链接的专用链接；
+	// 各订阅的固定 UA 挪到全局（取第一个填了的）；其余内容原样保留
+	const v3 = `{"auth":{"hash":"h","salt":"s"},"config":{"version":3,"baseConfig":"mode: rule",
+		"templates":[{"id":"3333333333333333","name":"T","kind":"parser","parser":"yaml: {}"}],
+		"profiles":[{"id":"1111111111111111","name":"P1","token":"t1","rulesAfter":"MATCH,DIRECT","subscriptions":[
+			{"id":"aaaaaaaaaaaaaaaa","name":"A","url":"https://a.example/s","enabled":true,"userAgent":"","variants":[{"match":"stash","url":"https://a.example/stash"}]},
+			{"id":"bbbbbbbbbbbbbbbb","name":"B","url":" ","enabled":true,"userAgent":"UA_B","variants":[{"match":"x","url":""},{"match":"stash","url":"https://b.example/stash"},{"match":"loon","url":"https://b.example/loon"}]},
+			{"id":"cccccccccccccccc","kind":"manual","name":"M","enabled":true,"userAgent":"other/2","nodes":"- {name: x, type: http, server: 1.1.1.1, port: 80}","variants":[]}]}]}}`
+	c = open(strings.ReplaceAll(v3, "UA_B", "mihomo/1.19"))
+	p = c.Profiles[0]
+	if c.Version != configVersion || len(c.Templates) != 1 || p.Token != "t1" || p.RulesAfter != "MATCH,DIRECT" || len(p.Subscriptions) != 3 {
+		t.Fatalf("v3 迁移后结构不符: %+v", c)
+	}
+	if p.Subscriptions[0].URL != "https://a.example/s" || p.Subscriptions[1].URL != "https://b.example/stash" {
+		t.Errorf("v3 迁移后的订阅链接不符: %+v", p.Subscriptions)
+	}
+	for _, s := range p.Subscriptions {
+		if s.LegacyVariants != nil || s.LegacyUserAgent != "" {
+			t.Errorf("「%s」的专用链接或固定 UA 没有被移除: %+v", s.Name, s)
+		}
+	}
+	if c.UserAgent != "mihomo/1.19" || c.UnlockUserAgent != "" {
+		t.Errorf("v3 迁移后的全局 UA 不符: %q / %q", c.UserAgent, c.UnlockUserAgent)
+	}
+	// 订阅里填的就是内置默认 UA 时，全局留空（继续跟随默认值）
+	if c = open(strings.ReplaceAll(v3, "UA_B", defaultUA)); c.UserAgent != "" {
+		t.Errorf("默认 UA 不应写进全局设置: %q", c.UserAgent)
 	}
 }
 

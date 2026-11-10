@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dlclark/regexp2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -83,30 +82,13 @@ func parseCustomProxies(text string) ([]map[string]any, error) {
 	return nil, errors.New("自定义节点格式无法识别（需要 YAML 数组或分享链接）")
 }
 
-// resolveSource 根据拉取合并链接的客户端 UA，决定某个订阅本次用哪个上游链接和哪个 UA。
-func resolveSource(s Subscription, clientUA string) (url, ua string, err error) {
-	url = strings.TrimSpace(s.URL)
-	for _, v := range s.Variants {
-		match, vu := strings.TrimSpace(v.Match), strings.TrimSpace(v.URL)
-		if match == "" || vu == "" {
-			continue
-		}
-		re, e := regexp2.Compile(match, regexp2.IgnoreCase)
-		if e != nil {
-			err = fmt.Errorf("UA 匹配正则 %q 无效: %w", match, e)
-			continue
-		}
-		re.MatchTimeout = 2 * time.Second
-		if reMatch(re, clientUA) {
-			url = vu
-			break
-		}
-	}
-	ua = strings.TrimSpace(s.UserAgent)
+// resolveUA 决定某个订阅本次拉取上游用哪个 UA：透传模式下用拉取合并链接的客户端的 UA，
+// 否则（或客户端没带 UA 时）用全局设置里的固定 UA。
+func resolveUA(cfg Config, s Subscription, clientUA string) string {
 	if s.UAMode == "passthrough" && clientUA != "" {
-		ua = clientUA
+		return clientUA
 	}
-	return url, firstNonEmpty(ua, defaultUA), err
+	return firstNonEmpty(strings.TrimSpace(cfg.UserAgent), defaultUA)
 }
 
 // Build 为订阅组 p 拉取订阅并生成最终配置。clientUA 是拉取合并链接的客户端的 UA。流程：
@@ -130,6 +112,7 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 	entries := make([]*cacheEntry, len(subs))
 	res.Subs = make([]SubStatus, len(subs))
 	ttl := time.Duration(cfg.CacheMinutes) * time.Minute
+	unlockUA := firstNonEmpty(strings.TrimSpace(cfg.UnlockUserAgent), chromeUA)
 	var wg sync.WaitGroup
 	for i, s := range subs {
 		wg.Add(1)
@@ -147,17 +130,14 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 				res.Subs[i] = st
 				return
 			}
-			url, ua, rerr := resolveSource(s, clientUA)
+			url, ua := strings.TrimSpace(s.URL), resolveUA(cfg, s, clientUA)
 			st := SubStatus{ID: s.ID, Name: s.Name, URL: url, UA: ua}
 			if url == "" {
-				st.Error = "没有可用的订阅链接：默认链接为空，且没有匹配当前客户端 UA 的专用链接"
-				if rerr != nil {
-					st.Error = rerr.Error()
-				}
+				st.Error = "没有填写订阅链接"
 				res.Subs[i] = st
 				return
 			}
-			e, err := f.Get(s, url, ua, ttl, force)
+			e, err := f.Get(s, url, ua, unlockUA, ttl, force)
 			if err != nil {
 				st.Error = err.Error()
 				st.Stale = e != nil

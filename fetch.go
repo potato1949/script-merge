@@ -19,8 +19,9 @@ import (
 )
 
 const (
+	// defaultUA 是全局设置里没填固定 UA 时，拉取上游订阅用的 UA
 	defaultUA = "clash-verge/v2.4.2"
-	// chromeUA 用于访问解锁地址
+	// chromeUA 是全局设置里没填解锁 UA 时，访问解锁地址用的 UA
 	chromeUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 	maxEntriesPerSub = 16               // 每个订阅最多保留多少份（不同链接 / UA 的）缓存
@@ -82,8 +83,13 @@ func NewFetcher(dataDir string) *Fetcher {
 	return f
 }
 
-func cacheKey(subID, url, ua, unlock string) string {
-	h := sha256.Sum256([]byte(url + "\n" + ua + "\n" + unlock))
+// cacheKey 由所有影响拉取结果的输入算出。解锁 UA 只在有解锁地址时才起作用，所以也只在那时计入。
+func cacheKey(subID, url, ua, unlock, unlockUA string) string {
+	s := url + "\n" + ua + "\n" + unlock
+	if strings.TrimSpace(unlock) != "" {
+		s += "\n" + unlockUA
+	}
+	h := sha256.Sum256([]byte(s))
 	return subID + "-" + hex.EncodeToString(h[:6])
 }
 
@@ -128,11 +134,11 @@ func (f *Fetcher) store(e *cacheEntry) {
 	}
 }
 
-// Get 以给定的链接和 UA 拉取订阅。
+// Get 以给定的链接和 UA 拉取订阅；unlockUA 是访问解锁地址用的 UA。
 // 缓存未过期时直接返回缓存；拉取失败时返回 (同一链接 + UA 的旧缓存或 nil, err)。
 // 不会回退到其他链接 / UA 的结果：不同 UA 拿到的节点可能不同，某个 UA 失败就是失败。
-func (f *Fetcher) Get(sub Subscription, url, ua string, ttl time.Duration, force bool) (*cacheEntry, error) {
-	key := cacheKey(sub.ID, url, ua, sub.UnlockURL)
+func (f *Fetcher) Get(sub Subscription, url, ua, unlockUA string, ttl time.Duration, force bool) (*cacheEntry, error) {
+	key := cacheKey(sub.ID, url, ua, sub.UnlockURL, unlockUA)
 	l := f.keyLock(key)
 	l.Lock()
 	defer l.Unlock()
@@ -149,7 +155,7 @@ func (f *Fetcher) Get(sub Subscription, url, ua string, ttl time.Duration, force
 			return cached, fail.err
 		}
 	}
-	proxies, userinfo, err := fetchSubscription(url, ua, sub.UnlockURL)
+	proxies, userinfo, err := fetchSubscription(url, ua, sub.UnlockURL, unlockUA)
 	if err != nil {
 		f.mu.Lock()
 		f.fails[key] = failure{time.Now(), err}
@@ -161,7 +167,7 @@ func (f *Fetcher) Get(sub Subscription, url, ua string, ttl time.Duration, force
 	return e, nil
 }
 
-func fetchSubscription(url, ua, unlockURL string) ([]map[string]any, string, error) {
+func fetchSubscription(url, ua, unlockURL, unlockUA string) ([]map[string]any, string, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	get := func(u, ua, accept string) (*http.Response, error) {
 		req, err := http.NewRequest(http.MethodGet, u, nil)
@@ -173,10 +179,10 @@ func fetchSubscription(url, ua, unlockURL string) ([]map[string]any, string, err
 		return client.Do(req)
 	}
 
-	// 解锁只是一次普通的 GET（Chrome UA）：上游要求该地址被访问过之后才放行订阅拉取。
+	// 解锁只是一次普通的 GET（默认用 Chrome 的 UA）：上游要求该地址被访问过之后才放行订阅拉取。
 	// 两次请求互相独立，不共享 Cookie。
 	if u := strings.TrimSpace(unlockURL); u != "" {
-		resp, err := get(u, chromeUA, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		resp, err := get(u, unlockUA, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 		if err != nil {
 			return nil, "", fmt.Errorf("访问解锁地址失败: %w", err)
 		}

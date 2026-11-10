@@ -10,11 +10,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
 // configVersion 是当前配置结构的版本，见 Config.migrate。
-const configVersion = 3
+const configVersion = 4
 
 // Subscription 是订阅组里的一个节点来源：远程订阅（remote）或手动填写的节点（manual）。
 type Subscription struct {
@@ -31,16 +32,16 @@ type Subscription struct {
 
 	// 仅 remote
 	URL       string `json:"url"`
-	UAMode    string `json:"uaMode"`    // fixed：用 UserAgent；passthrough：透传拉取合并链接的客户端 UA
-	UserAgent string `json:"userAgent"` // 固定 UA；透传模式下客户端没带 UA 时的后备值
-	// Variants 按客户端 UA 切换上游链接：自上而下第一条匹配的生效，都不匹配用 URL
-	Variants  []URLVariant `json:"variants"`
-	UnlockURL string       `json:"unlockUrl"` // 拉取订阅前先访问一次的地址
+	UAMode    string `json:"uaMode"`    // fixed：用全局的 Config.UserAgent；passthrough：透传拉取合并链接的客户端 UA
+	UnlockURL string `json:"unlockUrl"` // 拉取订阅前先访问一次的地址
+
+	LegacyVariants  []URLVariant `json:"variants,omitempty"`  // v4 起移除：按客户端 UA 切换上游链接
+	LegacyUserAgent string       `json:"userAgent,omitempty"` // v4 起改为全局的 Config.UserAgent
 }
 
-// URLVariant 是「客户端 UA 匹配 → 专用订阅链接」的一条映射。
+// URLVariant 是旧版「客户端 UA 匹配 → 专用订阅链接」的一条映射，仅用于 migrate。
 type URLVariant struct {
-	Match string `json:"match"` // 正则，不区分大小写，匹配客户端 UA
+	Match string `json:"match"`
 	URL   string `json:"url"`
 }
 
@@ -105,6 +106,10 @@ type Config struct {
 	CacheMinutes   int        `json:"cacheMinutes"`
 	UpdateInterval int        `json:"updateInterval"` // 小时，写入 profile-update-interval
 	BaseConfig     string     `json:"baseConfig"`     // 所有订阅组共用
+	// UserAgent 是拉取上游订阅用的固定 UA（透传模式下客户端没带 UA 时也用它），空则用 defaultUA
+	UserAgent string `json:"userAgent"`
+	// UnlockUserAgent 是访问解锁地址用的 UA，空则用 chromeUA
+	UnlockUserAgent string `json:"unlockUserAgent"`
 
 	// 以下为旧版字段，仅用于 migrate。
 	LegacyToken         string         `json:"token,omitempty"`         // v1：单订阅组
@@ -123,10 +128,42 @@ type Config struct {
 //	v1：只有一组订阅，字段都在顶层
 //	v2：有 Profiles，但策略组 / 规则 / 通用 Parser 仍在顶层、各组共用
 //	v3：策略组、规则、Parser 都在订阅组内；自定义节点并入订阅源；新增模板
+//	v4：移除按客户端 UA 切换上游链接的「专用链接」，每个订阅只有一个链接；固定 UA 从各订阅挪到全局
 func (c *Config) migrate() bool {
 	if c.Version >= configVersion {
 		return false
 	}
+	if c.Version < 3 {
+		c.migrateToV3()
+	}
+	// v3 → v4
+	for i := range c.Profiles {
+		subs := c.Profiles[i].Subscriptions
+		for j := range subs {
+			s := &subs[j]
+			// 默认链接为空的订阅改用第一条有链接的专用链接，免得迁移后无链接可拉
+			for _, v := range s.LegacyVariants {
+				if strings.TrimSpace(s.URL) != "" {
+					break
+				}
+				s.URL = strings.TrimSpace(v.URL)
+			}
+			s.LegacyVariants = nil
+			// 全局固定 UA 取第一个填了 UA 的订阅的值（各订阅填得不一样时，其余的丢弃）
+			if c.UserAgent == "" {
+				c.UserAgent = strings.TrimSpace(s.LegacyUserAgent)
+			}
+			s.LegacyUserAgent = ""
+		}
+	}
+	if c.UserAgent == defaultUA { // 和内置默认值相同就留空，以后默认值更新时跟着变
+		c.UserAgent = ""
+	}
+	c.Version = configVersion
+	return true
+}
+
+func (c *Config) migrateToV3() {
 	if len(c.Profiles) == 0 { // v1 → v2
 		c.Profiles = []Profile{{
 			ID: randHex(8), Name: "默认", Token: firstNonEmpty(c.LegacyToken, randHex(16)),
@@ -158,8 +195,6 @@ func (c *Config) migrate() bool {
 	}
 	c.LegacyToken, c.LegacyFileName, c.LegacySubscriptions, c.LegacyCustomProxies = "", "", nil, ""
 	c.LegacyGroups, c.LegacyRulesBefore, c.LegacyRuleSets, c.LegacyRulesAfter, c.LegacyParser = nil, "", nil, "", ""
-	c.Version = configVersion
-	return true
 }
 
 type authData struct {

@@ -21,10 +21,10 @@
 | `store.go` | 数据模型、JSON 持久化、旧配置迁移、密码哈希、默认配置与内置模板 |
 | `fetch.go` | 拉取上游订阅（解锁）、按链接 + UA 的缓存、订阅内容解析入口 |
 | `uri.go` | 分享链接（ss / vmess / trojan / vless / hysteria2）→ Clash 节点 |
-| `build.go` | 核心流程 `Build`：选链接和 UA → 合并节点 → 策略组 → 规则 → Parser → 校验 → 输出 YAML |
+| `build.go` | 核心流程 `Build`：决定拉取用的 UA → 合并节点 → 策略组 → 规则 → Parser → 校验 → 输出 YAML |
 | `parser.go` | CFW Parsers 语法实现、正则封装 |
 | `web/index.html` | 管理界面，以及 UA 预设、规则源预设 |
-| `app_test.go` | 测试：命令语法、Parser 顺序、分享链接、端到端构建、UA 透传与专用链接、迁移、内置模板一致性 |
+| `app_test.go` | 测试：命令语法、Parser 顺序、分享链接、端到端构建、UA 透传、迁移、内置模板一致性 |
 
 ## 数据模型
 
@@ -34,14 +34,14 @@ Config
 ├─ Profiles[]              订阅组，彼此完全独立
 │   ├─ ID / Name / Token / FileName
 │   ├─ Subscriptions[]     节点来源
-│   │    ├─ Kind = remote：URL、UAMode、UserAgent、Variants、UnlockURL
+│   │    ├─ Kind = remote：URL、UAMode、UnlockURL
 │   │    ├─ Kind = manual：Nodes（YAML 或分享链接文本）
 │   │    └─ 两种都有：Enabled、Prefix、Include、Exclude
 │   ├─ Groups[]            策略组
 │   ├─ Rules               RulesBefore / RuleSets[] / RulesAfter（内嵌结构体）
 │   └─ Parser
 ├─ Templates[]             模板：Kind = groups / rules / parser，带对应那部分内容
-└─ 全局：BaseConfig、CacheMinutes、UpdateInterval
+└─ 全局：BaseConfig、CacheMinutes、UpdateInterval、UserAgent（固定 UA）、UnlockUserAgent（解锁 UA）
 ```
 
 **模板是复制语义**：套用模板 = 把模板内容复制进订阅组，之后两者互不影响。所以服务端只负责保存 `Templates`，「套用」「存为模板」都是前端对 `cfg` 对象的操作（`KINDS[kind].fields` 列出了互相复制的字段），`Build` 完全不知道模板的存在。内置模板（`seedTemplates`）只在新建配置或迁移时写入一次，之后和用户自建的没有区别，可以改名、删除。
@@ -55,7 +55,7 @@ Config
 ```
 基础配置 (cfg.BaseConfig) → root map
   1. 并发处理本组所有启用的节点来源
-       remote：resolveSource 决定链接和 UA → Fetcher.Get → parseSubscription
+       remote：resolveUA 决定 UA → Fetcher.Get → parseSubscription
        manual：parseCustomProxies 解析 Nodes
   2. 汇总节点        Include/Exclude 过滤 → 加 Prefix → 重名加序号
   3. 生成策略组      Extra（固定成员）在前，按 Nodes 模式追加节点
@@ -69,24 +69,24 @@ Config
 
 内存中的配置树统一使用 `map[string]any` / `[]any`（不是 `[]map[string]any` 或 `[]string`），因为 Parser 的路径命令要对任意位置做通用遍历。往 `root` 里放数据时请保持这个约定，否则 `applyPath` 和 `toNode` 不认识。
 
-### 链接与 UA 的选择（`resolveSource`）
+### 拉取上游用的 UA（`resolveUA`）
 
-- **链接**：`Variants` 自上而下，第一条 `Match`（正则，不分大小写）匹配 `clientUA` 的生效；都不匹配用 `URL`。`URL` 为空且没有匹配时，该来源本次不提供节点（状态里报错，不影响其他来源）
-- **UA**：`UAMode == "passthrough"` 且客户端带了 UA 时用 `clientUA`；否则用 `UserAgent`；再为空用 `defaultUA`
+- **链接**：每个订阅只有一个 `URL`。为空时该来源不提供节点（状态里报错，不影响其他来源）
+- **UA**：`UAMode == "passthrough"` 且客户端带了 UA 时用 `clientUA`；否则用全局的固定 UA `Config.UserAgent`；再为空用 `defaultUA`。订阅自己不带 UA，只选模式
 - `clientUA` 在 `main.go` 里被截断到 256 字符
 
-输出格式不随客户端变化，始终是 Clash YAML。
+上游内容只认 Clash YAML 或分享链接列表，不按客户端去拉它的原生格式；输出格式也不随客户端变化，始终是 Clash YAML。这样设计的理由和以后支持其他客户端的做法见 [CLIENT-SUPPORT.md](CLIENT-SUPPORT.md)。
 
 ### 上游拉取与缓存（`fetch.go`）
 
-- 每次拉取：先 GET `UnlockURL`（若有），再 GET 订阅地址。解锁只是一次普通的 GET——上游要求该地址被访问过之后才放行订阅——两次请求互相独立，不共享 Cookie。解锁请求固定使用 Chrome 的 UA（`chromeUA` 常量），订阅请求使用 `resolveSource` 给出的 UA。解锁请求只在网络失败时报错，不检查状态码
-- 缓存键 = `订阅 ID + sha256(实际链接 + 实际 UA + UnlockURL)` 的前缀（`cacheKey`）。同一订阅被不同 UA 透传拉取会各存一份；固定 UA 的订阅不管哪个客户端来都共用一份。内存一份 + `DATA_DIR/cache/<key>.json` 一份，启动时全部读入内存
+- 每次拉取：先 GET `UnlockURL`（若有），再 GET 订阅地址。解锁只是一次普通的 GET——上游要求该地址被访问过之后才放行订阅——两次请求互相独立，不共享 Cookie。解锁请求使用全局的解锁 UA `Config.UnlockUserAgent`（为空用 `chromeUA` 常量，即 Chrome 的 UA），不随订阅的 UA 模式变化；订阅请求使用 `resolveUA` 给出的 UA。解锁请求只在网络失败时报错，不检查状态码
+- 缓存键 = `订阅 ID + sha256(实际链接 + 实际 UA + UnlockURL)` 的前缀（`cacheKey`）；有解锁地址时解锁 UA 也计入。同一订阅被不同 UA 透传拉取会各存一份；固定 UA 的订阅不管哪个客户端来都共用一份。内存一份 + `DATA_DIR/cache/<key>.json` 一份，启动时全部读入内存
 - 有效期是 `Config.CacheMinutes`（默认 5 分钟）。有效期内同一个键不会再请求上游
 - 每个键有一把锁（`keyLock`），并发的相同请求只会拉一次上游
 - 拉取失败后同一个键 30 秒内不重试（`failBackoff`），避免上游故障时每次客户端请求都去打上游；`?refresh=1` 可绕过
 - 每个订阅最多保留 16 份缓存（`maxEntriesPerSub`），超出淘汰最旧的。透传模式下缓存份数由客户端 UA 的种类决定，这个上限防止无限增长
 - **失败时的回退**：`Fetcher.Get` 成功返回 `(entry, nil)`；失败返回 `(同一个键的旧缓存或 nil, err)`。**不会**回退到同一订阅其他链接 / UA 的结果——不同 UA 拿到的节点可能不同，某个 UA 失败就是失败。`Build` 据此设置 `SubStatus.Stale`
-- 修改订阅的链接、UA 或解锁地址后缓存键随之改变，旧缓存不会被命中（留在磁盘上直到被淘汰）
+- 修改订阅的链接、UA 模式、解锁地址，或全局的固定 UA、解锁 UA 后，受影响订阅的缓存键随之改变，旧缓存不会被命中（留在磁盘上直到被淘汰）
 - 缓存经过 JSON 往返后整数会变成 `float64`，`toNode` 会把整数值的 float 还原成整数输出
 - 订阅 ID 被用作缓存文件名，所以 `validateConfig` 只接受 16 位十六进制且全局唯一的 ID，其他一律由服务端重新生成（防路径穿越）
 - 订阅内容解析顺序：Clash YAML（有 `proxies`）→ base64 解码后的分享链接 → 明文分享链接
@@ -121,7 +121,8 @@ Config
 | --- | --- | --- |
 | v1（无 `version`，无 `profiles`） | 只有一组订阅，字段都在顶层 | 顶层的 token / fileName / subscriptions / customProxies 装进名为「默认」的订阅组，原订阅链接不变 |
 | v2（无 `version`，有 `profiles`） | 多订阅组，但策略组 / 规则 / 通用 Parser 在顶层共用 | 共用的策略组和规则复制进每个订阅组；`customProxies` 变成一个 manual 来源；通用 Parser 存为模板，并填入 Parser 为空的订阅组（两边都有内容时无法自动合并，只保留为模板）；写入内置模板 |
-| v3 | 当前结构 | |
+| v3 | 策略组、规则、Parser 都在订阅组内；订阅带「专用链接」（`variants`，按客户端 UA 切换上游链接）和各自的固定 UA（`userAgent`） | 移除专用链接：默认链接为空的订阅改用第一条有链接的专用链接，其余专用链接丢弃。固定 UA 挪到全局：取第一个填了 UA 的订阅的值（与内置默认值相同则留空），其余丢弃 |
+| v4 | 当前结构 | |
 
 旧字段以 `Legacy*` 命名、`omitempty` 保留在结构体里，只用于读取旧文件。以后改结构：`configVersion` 加一，在 `migrate` 里加一段，并在 `TestMigrateLegacyConfig` 补一个旧文件样例。
 
@@ -217,11 +218,9 @@ Config
 
 **解锁步骤要更复杂**（POST、自定义 Header、多步）：改 `fetchSubscription`。给 `Subscription` 加影响拉取结果的字段后，记得把它加进 `cacheKey`，否则改了配置缓存不会失效。
 
-**专用链接除了换链接还要换 UA / 解锁地址**：给 `URLVariant` 加字段，在 `resolveSource` 里一并返回。
-
 **给策略组 / 订阅 / 规则集加配置项**：① `store.go` 加结构体字段；② `build.go` 使用它；③ `web/index.html` 对应的 `tabXxx` 里加一个 `field(...)`，以及「添加」按钮里新对象的默认值。模板会自动带上新字段（复制的是整个对象）。
 
-**输出其他客户端格式**（sing-box、Surge）：`Build` 的前 4 步产出的 `root` 是 Clash 结构。可以在第 7 步之前按 `?target=` 分叉做转换，但规则集和策略组语义差异较大，工作量不小。
+**输出其他客户端格式**（Loon 等非 mihomo 系）：加一个输出侧的渲染器，接在 `Build` 第 6 步之后、替换第 7 步，把 Clash 结构的 `root` 转成目标格式；上游拉取和输入解析不用动。完整的事项清单（目标判定、透传 UA 的限制、基础配置、规则集链接、响应头）见 [CLIENT-SUPPORT.md](CLIENT-SUPPORT.md)。Stash 用的就是 Clash 格式，不需要渲染器。
 
 ## 开发与测试
 
@@ -235,9 +234,9 @@ go vet ./... && gofmt -l .
 
 改完先跑对应的测试：
 
-- `TestUAPassthroughAndVariants`：断言上游实际收到的「路径 + UA」及次数，以及失败时不跨 UA 回退。改 `resolveSource` 或缓存逻辑后跑它
-- `TestBuildEndToEnd`：先解锁再拉取、解锁用 Chrome UA、过滤、手动节点、重名处理、前瞻正则、Parser 引用手动节点、流量信息合并、输出可被重新解析、字符串类型不丢失、同一 UA 回退旧缓存
-- `TestMigrateLegacyConfig`：v1、v2 旧文件的迁移结果，以及迁移是幂等的
+- `TestUAPassthrough`：断言上游实际收到的「路径 + UA」及次数，以及失败时不跨 UA 回退。改 `resolveUA` 或缓存逻辑后跑它
+- `TestBuildEndToEnd`：先解锁再拉取、解锁 UA（默认 Chrome UA，以及全局自定义后重新拉取）、过滤、手动节点、重名处理、前瞻正则、Parser 引用手动节点、流量信息合并、输出可被重新解析、字符串类型不丢失、同一 UA 回退旧缓存
+- `TestMigrateLegacyConfig`：v1、v2、v3 旧文件的迁移结果，以及迁移是幂等的
 - `TestSeedTemplatesAreConsistent`：内置策略组模板和规则模板任意组合都没有悬空引用
 
 ## 已知限制
