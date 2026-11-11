@@ -89,6 +89,11 @@ main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .empty { border: 1px dashed var(--line-strong); border-radius: 12px; padding: 28px 20px; text-align: center; color: var(--muted); margin-bottom: 14px; }
 .empty b { display: block; color: var(--text); font: 600 16px/1.4 var(--serif); margin-bottom: 4px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips.names { align-items: center; max-height: 320px; overflow-y: auto; }
+.chips.names button { font-family: var(--mono); }
+.chips.names .pinned { background: var(--accent-soft); border-color: var(--accent); }
+.chips.names .gone { text-decoration: line-through; }
+.chips.names .more { font-size: 12.5px; color: var(--muted); }
 .section-head { display: flex; align-items: center; gap: 10px; margin: 26px 0 10px; }
 .section-head .section-title { margin: 0 auto 0 0; }
 .subhead { font-weight: 600; font-size: 13px; margin: 16px 0 8px; }
@@ -182,7 +187,7 @@ dialog label.f + label.f { margin-top: 12px; }
 <div id="toast"></div>
 <script>
 'use strict';
-// ---------- 预设（新增 UA 或规则源只需改这里） ----------
+// ---------- 预设（新增 UA 只需改这里；规则来源在配置里，见「规则来源」页） ----------
 const UA_PRESETS = [
   'clash-verge/v2.4.2', 'mihomo/1.19.15', 'clash.meta', 'ClashforWindows/0.20.39',
   'ClashMetaForAndroid/2.11.18.Meta', 'FlClash/v0.8.90', 'Stash/3.1.1 Clash/1.11.0',
@@ -192,23 +197,6 @@ const UA_PRESETS = [
 // 仅用于输入框的占位提示，实际默认值在 fetch.go 的 defaultUA / chromeUA，改动时两边一起改
 const DEFAULT_UA = 'clash-verge/v2.4.2';
 const DEFAULT_UNLOCK_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-const RULE_SOURCES = {
-  bm7: { label: 'blackmatrix7/ios_rule_script', format: 'yaml', behavior: () => 'classical', id: n => n,
-    url: n => `https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash/${n}/${n}.yaml`,
-    names: ['OpenAI', 'Claude', 'Gemini', 'Copilot', 'Google', 'YouTube', 'Netflix', 'Disney', 'Spotify', 'Telegram', 'Twitter', 'Facebook', 'Instagram', 'TikTok', 'GitHub', 'Microsoft', 'OneDrive', 'Apple', 'Steam', 'Epic', 'PayPal', 'Amazon', 'Cloudflare', 'Bahamut', 'BiliBili', 'Global', 'GlobalMedia', 'Proxy', 'China', 'ChinaMax', 'ChinaMedia', 'Lan', 'Advertising', 'AdvertisingLite', 'Privacy', 'Hijacking', 'Game', 'Download', 'Speedtest'] },
-  loyal: { label: 'Loyalsoldier/clash-rules', format: 'yaml', behavior: n => /cidr$/.test(n) ? 'ipcidr' : 'domain', id: n => 'ls-' + n,
-    url: n => `https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/${n}.txt`,
-    names: ['reject', 'icloud', 'apple', 'google', 'proxy', 'direct', 'private', 'gfw', 'tld-not-cn', 'telegramcidr', 'cncidr', 'lancidr', 'applications'] },
-  acl: { label: 'ACL4SSR', format: 'text', behavior: () => 'classical', id: n => 'acl-' + n,
-    url: n => `https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/${n}.list`,
-    names: ['LocalAreaNetwork', 'UnBan', 'BanAD', 'BanProgramAD', 'GoogleCN', 'Microsoft', 'Apple', 'Telegram', 'ProxyMedia', 'ProxyGFWlist', 'ChinaDomain', 'ChinaCompanyIp', 'Download'] },
-  geosite: { label: 'MetaCubeX geosite (mrs，需 mihomo 内核)', format: 'mrs', behavior: () => 'domain', id: n => 'geosite-' + n,
-    url: n => `https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geosite/${n}.mrs`,
-    names: ['cn', 'geolocation-!cn', 'private', 'category-ads-all', 'openai', 'anthropic', 'google', 'youtube', 'netflix', 'telegram', 'github', 'microsoft', 'apple', 'steam', 'bilibili'] },
-  geoip: { label: 'MetaCubeX geoip (mrs，需 mihomo 内核)', format: 'mrs', behavior: () => 'ipcidr', id: n => 'geoip-' + n,
-    url: n => `https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/meta/geo/geoip/${n}.mrs`,
-    names: ['cn', 'private', 'telegram', 'google', 'netflix', 'cloudflare'] },
-};
 const PARSER_EXAMPLE = `# CFW Parsers 语法（YAML 形式），在节点、策略组、规则生成之后执行
 yaml:
   prepend-rules:
@@ -234,10 +222,11 @@ const KINDS = {
 // ---------- 状态 ----------
 const app = document.getElementById('app');
 let cfg = null, dirty = false, envPassword = false, busy = false;
-let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / templates / settings
+let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / rulesrc / templates / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
 const accessLog = {};          // 订阅组 ID → 访问记录（加载中为 null）
-const ui = { previewUA: UA_PRESETS[0], accessAll: false };
+const ui = { previewUA: UA_PRESETS[0], accessAll: false, ruleSrc: '', ruleFilter: {} }; // ruleSrc：规则编辑器里上次选的规则来源；ruleFilter：来源 ID → 清单的筛选词
+let ruleNames = {};            // 规则来源 ID → { names, updated }：手动拉取的规则清单，不属于配置
 let liveHint = null;           // 当前页面上「来自模板 X」提示的刷新函数，内容一改就调用
 let uid = 0;                   // 给 datalist 生成不重复的 id
 const nextId = prefix => prefix + (++uid);
@@ -393,7 +382,8 @@ function dialog(title, build, actions) {
 // ---------- 登录 / 初始化 ----------
 // 补齐旧数据里缺失的字段，并保证当前选中的订阅组存在
 function normalize(c) {
-  c.templates ||= []; c.sources ||= []; c.userAgent ||= ''; c.unlockUserAgent ||= '';
+  c.templates ||= []; c.sources ||= []; c.ruleSources ||= []; c.userAgent ||= ''; c.unlockUserAgent ||= '';
+  for (const s of c.ruleSources) { s.pinned ||= []; for (const k of ['name', 'repo', 'ref', 'dir', 'ext', 'url', 'ipcidr', 'prefix']) s[k] ||= ''; s.layout ||= 'file'; s.behavior ||= 'classical'; s.format ||= 'yaml'; }
   for (const t of [...c.profiles, ...c.templates]) { t.groups ||= []; t.ruleSets ||= []; t.rulesBefore ||= ''; t.rulesAfter ||= ''; t.parser ||= ''; }
   for (const s of c.sources) { s.kind ||= 'remote'; s.uaMode ||= 'fixed'; s.nodes ||= ''; s.url ||= ''; s.unlockUrl ||= ''; }
   const ids = new Set(c.sources.map(s => s.id));
@@ -404,7 +394,7 @@ function normalize(c) {
 async function boot() {
   const st = await (await fetch('/api/status')).json();
   envPassword = st.envPassword;
-  if (st.authed) { cfg = normalize(await api('GET', '/api/config')); dirty = false; render(); }
+  if (st.authed) { [cfg, ruleNames] = await Promise.all([api('GET', '/api/config').then(normalize), api('GET', '/api/rule-names')]); dirty = false; render(); }
   else renderAuth(!st.initialized);
 }
 function renderAuth(setup) {
@@ -440,6 +430,7 @@ function rail() {
       h('button', { class: 'gnew', onclick: newGroupDialog }, '+ 新建订阅组')),
     h('div', { class: 'railnav' },
       h('button', { class: on('sources') ? 'on' : '', onclick: () => go('sources') }, '节点来源'),
+      h('button', { class: on('rulesrc') ? 'on' : '', onclick: () => go('rulesrc') }, '规则来源'),
       h('button', { class: on('templates') ? 'on' : '', onclick: () => go('templates') }, '模板'),
       h('button', { class: on('settings') ? 'on' : '', onclick: () => go('settings') }, '全局设置'),
       h('button', { onclick: async () => { if (dirty && !confirm('有未保存的修改，确定退出登录？')) return; dirty = false; await api('POST', '/api/logout'); boot(); } }, '退出登录')));
@@ -451,7 +442,7 @@ function saveControls() {
 }
 function render() {
   liveHint = null;
-  const body = page === 'group' ? groupPage() : page === 'sources' ? sourcesPage() : page === 'templates' ? templatesPage() : settingsPage();
+  const body = page === 'group' ? groupPage() : page === 'sources' ? sourcesPage() : page === 'rulesrc' ? ruleSourcesPage() : page === 'templates' ? templatesPage() : settingsPage();
   app.replaceChildren(h('div', { class: 'shell' }, rail(), h('main', {}, body)));
 }
 
@@ -636,26 +627,26 @@ function tabGroups(p) {
 // 规则编辑器。o 是任何带 rulesBefore / ruleSets / rulesAfter 字段的对象：订阅组或规则模板
 function rulesEditor(o) {
   const policies = policyNames(o), policyList = nextId('policies'), nameListId = nextId('rsnames');
-  const add = { src: 'bm7', name: '', policy: policies[0] };
-  const nameList = datalist(nameListId, RULE_SOURCES[add.src].names);
+  const srcs = cfg.ruleSources, picked = () => srcs.find(s => s.id === add.src);
+  const add = { src: (srcs.find(s => s.id === ui.ruleSrc) || srcs[0])?.id, name: '', policy: policies[0] };
+  const nameList = datalist(nameListId, srcs.length ? ruleChoices(picked()) : []);
   const addSet = () => {
-    const src = RULE_SOURCES[add.src], n = add.name.trim();
+    const n = add.name.trim();
     if (!n) return toast('请填写规则名称');
-    const behavior = src.behavior(n);
-    o.ruleSets.push({ name: src.id(n), url: src.url(n), behavior, format: src.format, policy: add.policy, noResolve: behavior === 'ipcidr', enabled: true });
-    markDirty(); render();
+    o.ruleSets.push(ruleSetFrom(picked(), n, add.policy)); markDirty(); render();
   };
   return [
     datalist(policyList, policies),
     h('div', { class: 'card' }, h('h3', {}, '前置规则'), h('p', { class: 'hint' }, '每行一条，例：DOMAIN-SUFFIX,example.com,DIRECT'),
       field('', o, 'rulesBefore', { type: 'textarea', rows: 4 })),
     h('div', { class: 'card' }, h('h3', {}, '第三方规则集'),
-      h('p', { class: 'hint' }, '以 rule-providers 方式输出，由客户端自行下载更新。可从预设快速添加，也可手填任意规则 URL。'),
+      h('p', { class: 'hint' }, '以 rule-providers 方式输出，由客户端自行下载更新。可以从规则来源里选一条规则快速添加（规则名可以直接输入，候选里置顶的排在前面），也可以手填任意规则 URL。来源和它们的规则清单在「规则来源」页管理。'),
       h('div', { class: 'row', style: 'margin-bottom:10px' }, nameList,
-        h('div', { style: 'flex:2 1 220px' }, field('', add, 'src', { local: true, options: Object.entries(RULE_SOURCES).map(([k, v]) => [k, v.label]), onchange: v => nameList.replaceChildren(...RULE_SOURCES[v].names.map(n => h('option', { value: n }))) })),
-        h('div', { style: 'flex:1 1 140px' }, field('', add, 'name', { local: true, list: nameListId, placeholder: '规则名，如 OpenAI' })),
-        h('div', { style: 'flex:1 1 140px' }, field('', add, 'policy', { local: true, list: policyList, placeholder: '策略' })),
-        h('button', { onclick: addSet }, '+ 从预设添加'),
+        srcs.length > 0 && [
+          h('div', { style: 'flex:2 1 220px' }, field('', add, 'src', { local: true, options: srcs.map(s => [s.id, s.name || '(未命名)']), onchange: v => { ui.ruleSrc = v; nameList.replaceChildren(...ruleChoices(picked()).map(n => h('option', { value: n }))); } })),
+          h('div', { style: 'flex:1 1 140px' }, field('', add, 'name', { local: true, list: nameListId, placeholder: '规则名，如 OpenAI' })),
+          h('div', { style: 'flex:1 1 140px' }, field('', add, 'policy', { local: true, list: policyList, placeholder: '策略' })),
+          h('button', { onclick: addSet }, '+ 从来源添加')],
         h('button', { onclick: () => { o.ruleSets.push({ name: '', url: '', behavior: 'classical', format: 'yaml', policy: policies[0], noResolve: false, enabled: true }); markDirty(); render(); } }, '+ 手动添加')),
       o.ruleSets.length > 0 && h('div', { class: 'tblwrap' }, h('table', {},
         h('tr', {}, ['启用', '名称', 'URL', '类型', '格式', '策略', 'no-resolve', ''].map(t => h('th', {}, t))),
@@ -842,6 +833,99 @@ function sourcesPage() {
       h('div', { class: 'row' },
         h('button', { onclick: () => add('remote') }, '+ 添加订阅链接'),
         h('button', { onclick: () => add('manual') }, '+ 添加手动节点'))),
+  ];
+}
+
+// ---------- 规则来源 ----------
+// 规则编辑器里某个来源的候选规则名：置顶的在前，然后是拉取到的清单
+const ruleChoices = s => [...new Set([...s.pinned, ...(ruleNames[s.id]?.names || [])])];
+// 按来源的设置拼出一条规则集。之后它和来源互不影响
+function ruleSetFrom(s, name, policy) {
+  let behavior = s.behavior;
+  try { if (s.ipcidr && new RegExp(s.ipcidr).test(name)) behavior = 'ipcidr'; } catch { /* 正则写错就按默认类型 */ }
+  return { name: s.prefix + name, url: s.url.replaceAll('{name}', name), behavior, format: s.format, policy, noResolve: behavior === 'ipcidr', enabled: true };
+}
+async function pullRuleNames(list, btn) {
+  list = list.filter(s => s.repo.trim());
+  if (list.length === 0) return toast('先填写 GitHub 仓库，才能拉取规则清单');
+  btn.disabled = true; btn.textContent = '拉取中…';
+  let ok = 0, total = 0, fail = '';
+  for (const s of list) {
+    try { ruleNames[s.id] = await api('POST', '/api/rule-names', s); ok++; total += ruleNames[s.id].names.length; }
+    catch (err) { fail ||= `「${s.name || '(未命名)'}」拉取失败：${err.message}`; }
+  }
+  render();
+  toast(fail || (list.length > 1 ? `已更新 ${ok} 个来源的规则清单` : `已拉取 ${total} 条规则`));
+}
+const RULE_LIST_MAX = 300; // 清单一次最多显示这么多条，其余的靠筛选
+// 一个来源的置顶规则和规则清单
+function ruleNamesBox(s) {
+  const info = ruleNames[s.id], all = info?.names || [], known = new Set(all), pinned = new Set(s.pinned);
+  const pin = n => { if (n && !pinned.has(n)) { s.pinned.push(n); markDirty(); render(); } };
+  const unpin = n => { s.pinned.splice(s.pinned.indexOf(n), 1); markDirty(); render(); };
+  const manual = { name: '' };
+  const listEl = h('div', { class: 'chips names' });
+  const fill = () => {
+    const q = (ui.ruleFilter[s.id] || '').trim().toLowerCase();
+    const hit = all.filter(n => !pinned.has(n) && n.toLowerCase().includes(q));
+    listEl.replaceChildren(...hit.slice(0, RULE_LIST_MAX).map(n => h('button', { class: 'sm', title: '点击置顶', onclick: () => pin(n) }, n)));
+    if (hit.length > RULE_LIST_MAX) listEl.append(h('span', { class: 'more' }, `还有 ${hit.length - RULE_LIST_MAX} 条没有显示，输入关键词缩小范围`));
+    if (hit.length === 0) listEl.append(h('span', { class: 'more' }, q ? '没有匹配的规则' : '清单里的规则都已置顶'));
+  };
+  fill();
+  const pullBtn = h('button', { class: 'sm', onclick: e => pullRuleNames([s], e.currentTarget) }, info ? '重新拉取' : '拉取规则清单');
+  return [
+    h('div', { class: 'section-head' }, h('div', { class: 'section-title' }, `置顶的规则（${s.pinned.length}）`)),
+    h('div', { class: 'sublabel' }, '置顶的规则在规则编辑器的候选里排在最前面，顺序就是这里的顺序。点一下取消置顶。'),
+    s.pinned.length > 0 && h('div', { class: 'chips names' }, s.pinned.map(n => {
+      const gone = info && !known.has(n);
+      return h('button', { class: 'sm pinned' + (gone ? ' gone' : ''), title: gone ? '最近一次拉取的清单里没有这条规则，点击取消置顶' : '点击取消置顶', onclick: () => unpin(n) }, n, h('span', { 'aria-hidden': 'true' }, ' ×'));
+    })),
+    h('div', { class: 'row', style: 'margin-top:8px' },
+      h('div', { style: 'flex:0 1 220px' }, field('', manual, 'name', { local: true, placeholder: '手动输入规则名' })),
+      h('button', { class: 'sm', onclick: () => pin(manual.name.trim()) }, '置顶')),
+    h('div', { class: 'section-head' },
+      h('div', { class: 'section-title' }, info ? `规则清单（${all.length}）` : '规则清单'),
+      info && h('span', { class: 'chip' }, '拉取于 ' + new Date(info.updated).toLocaleString()), pullBtn),
+    !info ? h('div', { class: 'sublabel' }, '还没有拉取过，规则编辑器的候选里只有置顶的规则。拉取后可以在这里浏览仓库里的全部规则并置顶常用的，候选里也会列出全部规则。') : [
+      h('div', { class: 'sublabel' }, '点一条规则把它置顶。'),
+      h('div', { style: 'max-width:320px;margin-bottom:8px' }, field('', ui.ruleFilter, s.id, { local: true, placeholder: '筛选规则名', onchange: fill })),
+      listEl],
+  ];
+}
+function ruleSourcesPage() {
+  const blank = () => ({ id: newID(), name: '新规则来源', repo: '', ref: 'main', dir: '', layout: 'file', ext: '.yaml', url: '', behavior: 'classical', ipcidr: '', format: 'yaml', prefix: '', pinned: [] });
+  return [
+    h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '规则来源'), saveControls())),
+    h('div', { class: 'content' },
+      h('p', { class: 'hint' }, '第三方规则仓库。订阅组和模板的「规则」页里，可以从这里的来源选一条规则快速添加成规则集。来源只是添加时的帮手：添加进去的规则集存的是拼好的地址，之后在这里修改或删除来源，不会改动已经添加的规则集。'),
+      h('p', { class: 'hint' }, '规则清单（仓库里有哪些规则）不会自动更新，需要时点「拉取」。清单通过 GitHub 接口获取，和上游订阅一样走 HTTP_PROXY / HTTPS_PROXY；匿名访问按出口 IP 每小时限 60 次，不够用时给服务设置环境变量 GITHUB_TOKEN。规则的内容始终由客户端自己下载，这里只列名字。'),
+      cfg.ruleSources.length === 0 ? empty('还没有规则来源', '添加一个来源，或者在规则页里直接手填规则集的地址。')
+        : h('div', { class: 'list' }, cfg.ruleSources.map((s, i) => {
+          const info = ruleNames[s.id];
+          return item(s, {
+            name: s.name, chips: [info ? `${info.names.length} 条规则` : '未拉取清单', s.pinned.length > 0 && `置顶 ${s.pinned.length}`],
+            controls: listButtons(cfg.ruleSources, i, () => { if (!confirm(`删除规则来源「${s.name}」？已经添加到订阅组和模板里的规则集不受影响。`)) return; cfg.ruleSources.splice(i, 1); markDirty(); render(); }),
+            body: nameEl => [
+              h('div', { class: 'grid' },
+                field('名称', s, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
+                field('GitHub 仓库（owner/repo，用来拉取规则清单）', s, 'repo', { placeholder: '例：blackmatrix7/ios_rule_script' }),
+                field('分支', s, 'ref', { placeholder: '例：master' }),
+                field('规则所在目录（空为仓库根目录）', s, 'dir', { placeholder: '例：rule/Clash' }),
+                field('目录结构', s, 'layout', { options: [['file', '每个文件是一条规则'], ['dir', '每个子目录是一条规则']], onchange: render }),
+                s.layout !== 'dir' && field('只列这个扩展名的文件', s, 'ext', { placeholder: '例：.yaml' }),
+                field('规则文件地址（{name} 代表规则名）', s, 'url', { wide: true, placeholder: 'https://raw.githubusercontent.com/owner/repo/main/{name}.yaml' }),
+                field('规则类型', s, 'behavior', { options: [['classical', 'classical'], ['domain', 'domain'], ['ipcidr', 'ipcidr']] }),
+                field('规则名匹配此正则时按 ipcidr（可选）', s, 'ipcidr', { placeholder: '例：cidr$' }),
+                field('文件格式', s, 'format', { options: [['yaml', 'yaml'], ['text', 'text'], ['mrs', 'mrs（需 mihomo 内核）']] }),
+                field('规则集名称前缀（可选）', s, 'prefix', { placeholder: '例：ls-' })),
+              ruleNamesBox(s),
+            ],
+          });
+        })),
+      h('div', { class: 'row' },
+        h('button', { onclick: () => { const s = blank(); cfg.ruleSources.push(s); openItems.add(s); markDirty(); render(); } }, '+ 添加规则来源'),
+        cfg.ruleSources.length > 0 && h('button', { onclick: e => pullRuleNames(cfg.ruleSources, e.currentTarget) }, '拉取全部来源的规则清单'))),
   ];
 }
 

@@ -15,7 +15,7 @@ import (
 )
 
 // configVersion 是当前配置结构的版本，见 Config.migrate。
-const configVersion = 5
+const configVersion = 6
 
 // Source 是一个全局的节点来源：远程订阅（remote）或手动填写的节点（manual）。
 // 多个订阅组可以引用同一个来源（SourceRef），这里只放属于来源本身的内容。
@@ -101,6 +101,30 @@ type RuleSet struct {
 	Enabled   bool   `json:"enabled"`
 }
 
+// RuleSource 是一个第三方规则仓库：规则编辑器里「从预设添加」的来源。
+// 它只是添加规则集时的帮手——加进订阅组或模板的规则集存的是拼好的 URL，之后和来源互不影响，Build 也不使用它。
+// 仓库里有哪些规则（规则清单）不属于配置，手动拉取后存在 RuleNameStore。
+type RuleSource struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+
+	// 规则清单从哪里列：GitHub 仓库某个分支下的一个目录。Repo 为空表示不拉清单，只用置顶的规则名
+	Repo   string `json:"repo"`   // owner/repo
+	Ref    string `json:"ref"`    // 分支或标签
+	Dir    string `json:"dir"`    // 规则所在目录，空为仓库根目录
+	Layout string `json:"layout"` // file：目录下每个文件是一条规则；dir：每个子目录是一条规则
+	Ext    string `json:"ext"`    // 仅 file：只列这个扩展名的文件，规则名是去掉扩展名后的文件名
+
+	// 添加规则集时怎么填
+	URL      string `json:"url"`      // 规则文件地址，{name} 代表规则名
+	Behavior string `json:"behavior"` // classical / domain / ipcidr
+	IPCIDR   string `json:"ipcidr"`   // 规则名匹配这个正则时类型改为 ipcidr（前端使用），空为不启用
+	Format   string `json:"format"`   // yaml / text / mrs
+	Prefix   string `json:"prefix"`   // 加在规则集名称前面，避免不同来源的同名规则冲突
+
+	Pinned []string `json:"pinned"` // 置顶的规则名：排在候选列表最前面，没拉过清单时也能选
+}
+
 // Rules 是一套规则：前置规则 → 规则集 → 后置规则。
 type Rules struct {
 	RulesBefore string    `json:"rulesBefore"`
@@ -137,13 +161,14 @@ type Template struct {
 }
 
 type Config struct {
-	Version        int        `json:"version"`
-	Profiles       []Profile  `json:"profiles"`
-	Sources        []Source   `json:"sources"` // 节点来源，被各订阅组引用
-	Templates      []Template `json:"templates"`
-	CacheMinutes   int        `json:"cacheMinutes"`
-	UpdateInterval int        `json:"updateInterval"` // 小时，写入 profile-update-interval
-	BaseConfig     string     `json:"baseConfig"`     // 所有订阅组共用
+	Version        int          `json:"version"`
+	Profiles       []Profile    `json:"profiles"`
+	Sources        []Source     `json:"sources"` // 节点来源，被各订阅组引用
+	Templates      []Template   `json:"templates"`
+	RuleSources    []RuleSource `json:"ruleSources"` // 第三方规则来源，规则编辑器里「从预设添加」用
+	CacheMinutes   int          `json:"cacheMinutes"`
+	UpdateInterval int          `json:"updateInterval"` // 小时，写入 profile-update-interval
+	BaseConfig     string       `json:"baseConfig"`     // 所有订阅组共用
 	// UserAgent 是拉取上游订阅用的固定 UA（透传模式下客户端没带 UA 时也用它），空则用 defaultUA
 	UserAgent string `json:"userAgent"`
 	// UnlockUserAgent 是访问解锁地址用的 UA，空则用 chromeUA
@@ -168,6 +193,7 @@ type Config struct {
 //	v3：策略组、规则、Parser 都在订阅组内；自定义节点并入订阅源；新增模板
 //	v4：移除按客户端 UA 切换上游链接的「专用链接」，每个订阅只有一个链接；固定 UA 从各订阅挪到全局
 //	v5：节点来源从各订阅组里提出来成为全局对象，订阅组只保留引用和本组的过滤设置
+//	v6：第三方规则来源从前端写死的预设变成配置里的 RuleSources，旧配置补上内置的几个
 func (c *Config) migrate() bool {
 	from := c.Version
 	if from >= configVersion {
@@ -179,7 +205,12 @@ func (c *Config) migrate() bool {
 	if from < 4 {
 		c.migrateToV4()
 	}
-	c.migrateToV5()
+	if from < 5 {
+		c.migrateToV5()
+	}
+	if len(c.RuleSources) == 0 {
+		c.RuleSources = seedRuleSources()
+	}
 	c.Version = configVersion
 	return true
 }
@@ -538,6 +569,29 @@ func seedTemplates() []Template {
 	}
 }
 
+// seedRuleSources 返回内置的规则来源，和内置模板一样只在新建配置或迁移时写入一次。
+// 置顶的是各仓库里常用的规则，没拉过规则清单时候选列表里就是它们。
+func seedRuleSources() []RuleSource {
+	const raw = "https://raw.githubusercontent.com/"
+	return []RuleSource{
+		{ID: randHex(8), Name: "blackmatrix7/ios_rule_script", Repo: "blackmatrix7/ios_rule_script", Ref: "master", Dir: "rule/Clash", Layout: "dir",
+			URL: raw + "blackmatrix7/ios_rule_script/master/rule/Clash/{name}/{name}.yaml", Behavior: "classical", Format: "yaml",
+			Pinned: []string{"OpenAI", "Claude", "Gemini", "Copilot", "Google", "YouTube", "Netflix", "Disney", "Spotify", "Telegram", "Twitter", "Facebook", "Instagram", "TikTok", "GitHub", "Microsoft", "OneDrive", "Apple", "Steam", "Epic", "PayPal", "Amazon", "Cloudflare", "Bahamut", "BiliBili", "Global", "GlobalMedia", "Proxy", "China", "ChinaMax", "ChinaMedia", "Lan", "Advertising", "AdvertisingLite", "Privacy", "Hijacking", "Game", "Download", "Speedtest"}},
+		{ID: randHex(8), Name: "Loyalsoldier/clash-rules", Repo: "Loyalsoldier/clash-rules", Ref: "release", Layout: "file", Ext: ".txt",
+			URL: raw + "Loyalsoldier/clash-rules/release/{name}.txt", Behavior: "domain", IPCIDR: "cidr$", Format: "yaml", Prefix: "ls-",
+			Pinned: []string{"reject", "icloud", "apple", "google", "proxy", "direct", "private", "gfw", "tld-not-cn", "telegramcidr", "cncidr", "lancidr"}},
+		{ID: randHex(8), Name: "ACL4SSR", Repo: "ACL4SSR/ACL4SSR", Ref: "master", Dir: "Clash", Layout: "file", Ext: ".list",
+			URL: raw + "ACL4SSR/ACL4SSR/master/Clash/{name}.list", Behavior: "classical", Format: "text", Prefix: "acl-",
+			Pinned: []string{"LocalAreaNetwork", "UnBan", "BanAD", "BanProgramAD", "GoogleCN", "Microsoft", "Apple", "Telegram", "ProxyMedia", "ProxyGFWlist", "ChinaDomain", "ChinaCompanyIp", "Download"}},
+		{ID: randHex(8), Name: "MetaCubeX geosite（mrs，需 mihomo 内核）", Repo: "MetaCubeX/meta-rules-dat", Ref: "meta", Dir: "geo/geosite", Layout: "file", Ext: ".mrs",
+			URL: raw + "MetaCubeX/meta-rules-dat/meta/geo/geosite/{name}.mrs", Behavior: "domain", Format: "mrs", Prefix: "geosite-",
+			Pinned: []string{"cn", "geolocation-!cn", "private", "category-ads-all", "openai", "anthropic", "google", "youtube", "netflix", "telegram", "github", "microsoft", "apple", "steam", "bilibili"}},
+		{ID: randHex(8), Name: "MetaCubeX geoip（mrs，需 mihomo 内核）", Repo: "MetaCubeX/meta-rules-dat", Ref: "meta", Dir: "geo/geoip", Layout: "file", Ext: ".mrs",
+			URL: raw + "MetaCubeX/meta-rules-dat/meta/geo/geoip/{name}.mrs", Behavior: "ipcidr", Format: "mrs", Prefix: "geoip-",
+			Pinned: []string{"cn", "private", "telegram", "google", "netflix", "cloudflare"}},
+	}
+}
+
 func defaultConfig() Config {
 	return Config{
 		Version: configVersion,
@@ -547,6 +601,7 @@ func defaultConfig() Config {
 		}},
 		Sources:        []Source{},
 		Templates:      seedTemplates(),
+		RuleSources:    seedRuleSources(),
 		CacheMinutes:   5,
 		UpdateInterval: 12,
 		BaseConfig:     defaultBase,

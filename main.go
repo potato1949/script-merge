@@ -30,6 +30,7 @@ type App struct {
 	store       *Store
 	fetcher     *Fetcher
 	access      *AccessLog
+	ruleNames   *RuleNameStore
 	envPassword string // 来自 ADMIN_PASSWORD；非空时网页端不可修改密码
 
 	mu       sync.Mutex
@@ -54,6 +55,7 @@ func main() {
 		store:       store,
 		fetcher:     NewFetcher(dataDir),
 		access:      OpenAccessLog(dataDir, 2*time.Second),
+		ruleNames:   OpenRuleNames(dataDir),
 		envPassword: os.Getenv("ADMIN_PASSWORD"),
 		sessions:    map[string]time.Time{},
 	}
@@ -85,6 +87,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/import", a.auth(a.handleImport))
 	mux.HandleFunc("GET /api/access", a.auth(a.handleGetAccess))
 	mux.HandleFunc("DELETE /api/access", a.auth(a.handleClearAccess))
+	mux.HandleFunc("GET /api/rule-names", a.auth(a.handleGetRuleNames))
+	mux.HandleFunc("POST /api/rule-names", a.auth(a.handlePullRuleNames))
 	mux.HandleFunc("GET /sub/{token}", a.handleSub)
 	return mux
 }
@@ -386,6 +390,19 @@ func validateConfig(c *Config, tokens map[string]string) error {
 		}
 		if strings.TrimSpace(t.Name) == "" {
 			t.Name = "未命名模板"
+		}
+	}
+	if c.RuleSources == nil {
+		c.RuleSources = []RuleSource{}
+	}
+	for i := range c.RuleSources {
+		s := &c.RuleSources[i]
+		fixID(&s.ID)
+		if err := s.normalize(); err != nil {
+			return errors.New("规则来源「" + s.Name + "」: " + err.Error())
+		}
+		if s.Name == "" {
+			s.Name = firstNonEmpty(s.Repo, "规则来源 "+strconv.Itoa(i+1))
 		}
 	}
 	if c.CacheMinutes < 0 {

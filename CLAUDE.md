@@ -44,13 +44,21 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 数据模型（`store.go`）
 
-`Config` 下有 `Profiles[]`（各自带 `Groups`、内嵌的 `Rules`、`Parser`，以及对节点来源的引用 `Sources []SourceRef`）、全局的节点来源 `Sources[]`、`Templates[]`，以及全局的 `BaseConfig` / `CacheMinutes` / `UpdateInterval` / `UserAgent`（固定 UA）/ `UnlockUserAgent`（解锁 UA）。
+`Config` 下有 `Profiles[]`（各自带 `Groups`、内嵌的 `Rules`、`Parser`，以及对节点来源的引用 `Sources []SourceRef`）、全局的节点来源 `Sources[]`、`Templates[]`、规则来源 `RuleSources[]`，以及全局的 `BaseConfig` / `CacheMinutes` / `UpdateInterval` / `UserAgent`（固定 UA）/ `UnlockUserAgent`（解锁 UA）。
 
 - **节点来源是全局对象，订阅组只存引用**：`Source` 放属于来源本身的内容（名称、`Kind`、链接、`UAMode`、解锁地址、手填节点），`SourceRef` 放「这个订阅组怎么用它」（启用、前缀、Include / Exclude）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次。给来源加字段时先想清楚它属于哪一边
 - `Source.Kind`：`remote`（远程订阅）或 `manual`（手填节点）；空值等同 `remote`
 - **模板是复制语义**：套用 = 把模板内容复制进订阅组，之后互不影响。服务端只存 `Templates`，套用完全是前端对 `cfg` 对象的操作，`Build` 不知道模板的存在。模板只在「模板」页新建和编辑
 - `Profile.Applied` 按模板类型记下最近一次套用的模板 ID 和当时的内容摘要（前端的 `digest` 计算），只用于界面上的「来自模板 X / 已修改 / 模板有更新」提示，不做任何自动同步
 - 内置模板（`seedTemplates`）只在新建配置或迁移时写入一次。两套策略组模板和两套规则模板共用同一批策略组名（`gProxy` 等常量）才能任意组合，新增内置模板要沿用这些名字（`TestSeedTemplatesAreConsistent` 会检查）
+
+- **规则来源也是复制语义**：`RuleSource` 描述一个第三方规则仓库（清单从 GitHub 的哪个目录列、规则集的地址模板和类型、置顶的规则名），只用于规则编辑器的「从来源添加」。前端 `ruleSetFrom` 拼出的 `RuleSet` 存的是完整地址，之后和来源无关，`Build` 不读 `RuleSources`。内置来源（`seedRuleSources`）同样只在新建配置或迁移时写入一次
+
+### 规则清单（`rulenames.go`）
+
+- 各规则来源里有哪些规则名存在 `DATA_DIR/rulenames.json`，不属于配置，不随导出。**只在用户点「拉取」时更新**（`POST /api/rule-names`），没有定时任务（这是用户明确要求的）
+- 拉取是对 GitHub git/trees 接口的一次请求，走环境变量里的代理；匿名访问按出口 IP 每小时限 60 次，`GITHUB_TOKEN` 环境变量可带令牌。测试里把 `githubAPI` 换成 httptest 的地址
+- 置顶（`RuleSource.Pinned`）属于配置：候选列表 = 置顶的规则 + 清单里其余的，没拉过清单时只有置顶的
 
 ### 构建流程（`build.go` 的 `Build`）
 
@@ -82,7 +90,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 迁移（`store.go` 的 `Config.migrate`）
 
-`Config.Version` 是结构版本（当前 `configVersion = 5`）。`OpenStore` 时自动迁移，原文件存为 `config.json.bak`。
+`Config.Version` 是结构版本（当前 `configVersion = 6`）。`OpenStore` 时自动迁移，原文件存为 `config.json.bak`。
 
 - 只是**加字段**不需要迁移，但零值必须是合理的默认行为
 - **改结构**：`configVersion` 加一，在 `migrate` 里加一段，旧字段以 `Legacy*` + `omitempty` 保留，并在 `TestMigrateLegacyConfig` 补一个旧文件样例
@@ -93,10 +101,11 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 前端（`web/index.html`）
 
-原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`page`、`pi`、`tab`、`dirty`）。
+原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`page`、`pi`、`tab`、`dirty`、`ruleNames`）。
 
 - 策略组编辑器 `groupsEditor(o)` 和规则编辑器 `rulesEditor(o)` 接收任何带对应字段的对象，订阅组和模板共用；不要在里面用 `cur()`
 
+- 规则来源的管理在「规则来源」页（`ruleSourcesPage` + `ruleNamesBox`）：改来源、拉取清单、点规则名置顶 / 取消置顶。规则清单在模块级变量 `ruleNames` 里，启动时和 `cfg` 一起加载，拉取不标记未保存
 - 来源的新建、修改、删除只在「节点来源」页（`sourcesPage` + `sourceFields`）。订阅组的订阅源标签页（`tabSubs`）只能选用已有来源、移除引用、改 `SourceRef` 上的字段，来源内容只读展示（这是用户明确要求的）
 - `field(label, obj, key, opts)`：绑定到 `obj[key]` 的控件，输入即写回并标记未保存；不属于配置的临时输入传 `local: true`
 - `item(obj, opts)`：可展开的行，展开状态按对象引用记在 `openItems`

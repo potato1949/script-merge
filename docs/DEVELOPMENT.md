@@ -20,15 +20,17 @@
 | `main.go` | 启动、路由、认证与会话、HTTP 处理函数、保存配置时的校验 |
 | `transfer.go` | 配置的导出与导入（整份配置 / 单个订阅组） |
 | `access.go` | 订阅链接的访问记录、客户端 IP 的判定 |
+| `rulenames.go` | 规则来源的校验、从 GitHub 拉取规则清单、清单的保存 |
 | `store.go` | 数据模型、JSON 持久化、旧配置迁移、密码哈希、默认配置与内置模板 |
 | `fetch.go` | 拉取上游订阅（解锁、代理）、按链接 + UA 的缓存、订阅内容解析入口 |
 | `uri.go` | 分享链接（ss / vmess / trojan / vless / hysteria2）→ Clash 节点 |
 | `build.go` | 核心流程 `Build`：决定拉取用的 UA → 合并节点 → 策略组 → 规则 → Parser → 校验 → 输出 YAML |
 | `parser.go` | CFW Parsers 语法实现、正则封装 |
-| `web/index.html` | 管理界面，以及 UA 预设、规则源预设 |
+| `web/index.html` | 管理界面，以及 UA 预设 |
 | `app_test.go` | 测试：命令语法、Parser 顺序、分享链接、端到端构建、UA 透传、上游走代理、迁移、配置校验（来源与引用）、内置模板一致性 |
 | `transfer_test.go` | 测试：导出导入 |
 | `access_test.go` | 测试：访问记录、客户端 IP |
+| `rulenames_test.go` | 测试：规则清单的拉取与保存、规则来源的校验 |
 
 ## 数据模型
 
@@ -145,7 +147,7 @@ Config
 - 登录尝试被一把互斥锁串行化，失败后 sleep 1 秒，以此限制爆破速度
 - 订阅组的 `Token` 只由服务端生成：`PUT /api/config` 时按订阅组 ID 找回原令牌，前端传来的 `token` 一律忽略；新订阅组（ID 未知或为空）分配新 ID 和新令牌。唯一的例外是整份导入，见下
 
-`DATA_DIR/access.json`：各订阅链接的访问记录，见「访问记录」。`DATA_DIR/cache/`：上游缓存。这两处都不属于配置，删掉只是丢历史 / 重新拉取。
+`DATA_DIR/access.json`：各订阅链接的访问记录，见「访问记录」。`DATA_DIR/cache/`：上游缓存。`DATA_DIR/rulenames.json`：各规则来源的规则清单，见「规则来源」。这三处都不属于配置，删掉只是丢历史 / 重新拉取。
 
 ### 迁移
 
@@ -157,7 +159,8 @@ Config
 | v2（无 `version`，有 `profiles`） | 多订阅组，但策略组 / 规则 / 通用 Parser 在顶层共用 | 共用的策略组和规则复制进每个订阅组；`customProxies` 变成一个 manual 来源；通用 Parser 存为模板，并填入 Parser 为空的订阅组（两边都有内容时无法自动合并，只保留为模板）；写入内置模板 |
 | v3 | 策略组、规则、Parser 都在订阅组内；订阅带「专用链接」（`variants`，按客户端 UA 切换上游链接）和各自的固定 UA（`userAgent`） | 移除专用链接：默认链接为空的订阅改用第一条有链接的专用链接，其余专用链接丢弃。固定 UA 挪到全局：取第一个填了 UA 的订阅的值（与内置默认值相同则留空），其余丢弃 |
 | v4 | 订阅（`subscriptions`）存在各订阅组里，来源本身和使用设置混在一个对象上 | 每条订阅拆成全局来源 + 订阅组里的引用（`splitSubscription`）。内容完全相同的来源合并成一个（远程：链接 + UA 模式 + 解锁地址；手动：节点文本），名称和 ID 取第一次出现的，这样原有缓存继续有效；没填链接 / 节点的不合并。前缀、过滤、是否启用留在各组的引用上 |
-| v5 | 当前结构 | |
+| v5 | 没有 `ruleSources`，规则来源是前端里写死的预设 | 写入内置的规则来源（`seedRuleSources`）。原有的规则集不动 |
+| v6 | 当前结构 | |
 
 旧字段以 `Legacy*` 命名、`omitempty` 保留在结构体里，只用于读取旧文件。以后改结构：`configVersion` 加一，在 `migrate` 里加一段（每一段只在 `from` 低于对应版本时执行），并在 `TestMigrateLegacyConfig` 补一个旧文件样例。导入功能复用同一个 `migrate`，所以旧版本导出的文件、旧的 `config.json` 都能导入。
 
@@ -190,6 +193,25 @@ Config
 
 没有做成配置项。局限：反向代理必须**追加**而不是透传 `X-Forwarded-For`（Nginx 的 `$proxy_add_x_forwarded_for`、Caddy 默认行为都是）；前面还有一层公网 CDN 时，记到的是 CDN 的地址。这个 IP 只用于显示，不参与任何访问控制。
 
+## 规则来源（`rulenames.go`）
+
+规则来源（`Config.RuleSources`）是「第三方规则仓库」的描述，只服务于规则编辑器里的「从来源添加」：选一个来源、填一个规则名，前端的 `ruleSetFrom` 按来源的设置拼出一条 `RuleSet`（地址模板里的 `{name}` 换成规则名，名称加前缀，规则名匹配 `IPCIDR` 正则时类型改成 ipcidr）。**这是复制语义**，和模板一样：加进订阅组或模板的规则集和来源再无关系，`Build` 不读 `RuleSources`，改、删来源不影响已有的规则集。
+
+一个来源分两部分：
+
+- **清单从哪里列**：`Repo`（GitHub 的 owner/repo）、`Ref`（分支）、`Dir`（目录）、`Layout`（`file`：目录下每个文件一条规则，按 `Ext` 筛选并去掉扩展名；`dir`：每个子目录一条规则，blackmatrix7 是这种）。`Repo` 为空表示不拉清单
+- **规则集怎么填**：`URL`（地址模板）、`Behavior`、`IPCIDR`、`Format`、`Prefix`
+
+`Pinned` 是置顶的规则名，候选列表里排在最前面；没拉过清单时候选里只有它们。内置的五个来源（`seedRuleSources`）把各仓库的常用规则预先置顶，和内置模板一样只在新建配置或迁移时写入一次。
+
+**规则清单**（仓库里有哪些规则名）不属于配置，存在 `DATA_DIR/rulenames.json`（来源 ID → 名字列表 + 拉取时间），不随导出。它**只在用户点「拉取」时更新**，没有定时任务，`Build` 也不触发。拉取是对 GitHub 接口的一次请求：`GET /repos/{repo}/git/trees/{ref}:{dir}`，列一层目录、不递归（用 git/trees 而不是 contents 接口，是因为后者一个目录最多返回 1000 条，MetaCubeX 的 geosite 目录有六千多个文件）。请求用默认的 `http.Client`，所以和上游订阅一样走环境变量里的代理。
+
+- 匿名访问 GitHub 接口按出口 IP 每小时限 60 次，共用出口的代理很容易用完；设置环境变量 `GITHUB_TOKEN` 后带令牌访问。限流时返回的错误里会提示这一点
+- 拉取失败不动已有的清单
+- `POST /api/rule-names` 的请求体是来源本身而不是 ID：在界面上改了仓库、目录后不用先保存就能拉。清单按来源 ID 保存；保存时顺手清掉配置里已经不存在的来源留下的清单
+- 服务端只会访问 `githubAPI`（测试里换成 httptest 的地址），`Repo` / `Ref` / `Dir` 在 `RuleSource.normalize` 里做了格式限制，不能借它访问别的地址
+- 要支持 GitHub 以外的清单来源（GitLab、自建目录索引等），在 `fetchRuleNames` 里按来源分支即可，产出名字列表，其余不用动
+
 ## HTTP 接口
 
 | 方法 路径 | 认证 | 说明 |
@@ -208,6 +230,8 @@ Config
 | `POST /api/import` | 是 | 请求体是导出的文件内容；返回导入后的配置 |
 | `GET /api/access?profile=<id>` | 是 | `{records}`，该订阅组的访问记录，最新的在前 |
 | `DELETE /api/access?profile=<id>` | 是 | 清空该订阅组的访问记录 |
+| `GET /api/rule-names` | 是 | `{来源 ID: {names, updated}}`，已拉取的全部规则清单 |
+| `POST /api/rule-names` | 是 | 请求体是一个规则来源；从 GitHub 拉取它的规则清单并保存，返回 `{names, updated}`。拉取失败返回 502 |
 | `GET /sub/{token}[?refresh=1]` | 令牌 | 该令牌对应订阅组的输出，以请求的 User-Agent 作为 clientUA，并记一条访问记录。响应头带 `Subscription-Userinfo`（各订阅流量求和、到期取最早）、`Profile-Update-Interval`、`Content-Disposition` |
 
 错误统一返回 `{"error": "..."}`。前端每次保存都是把整个 `cfg` 对象 PUT 回去，没有局部更新接口；模板的新建、编辑、套用，来源的增删和引用，订阅组的新建、复制、删除都只是改这个对象。
@@ -289,6 +313,8 @@ Config
 
 **解锁步骤要更复杂**（POST、自定义 Header、多步）：改 `fetchSubscription`。给 `Source` 加影响拉取结果的字段后，记得把它加进 `cacheKey`，否则改了配置缓存不会失效。
 
+**加一个内置规则来源**：`store.go` 的 `seedRuleSources` 加一项，同样只对新安装和迁移生效；已有用户在「规则来源」页自己添加。
+
 **给策略组 / 来源 / 规则集加配置项**：① `store.go` 加结构体字段（来源的配置项先分清属于 `Source` 还是 `SourceRef`）；② `build.go` 使用它；③ `web/index.html` 对应的编辑器（`groupsEditor` / `rulesEditor` / `sourceFields` / `tabSubs`）里加一个 `field(...)`，以及「添加」按钮里新对象的默认值。模板会自动带上新字段（复制的是整个对象）。
 
 **输出其他客户端格式**（Loon 等非 mihomo 系）：加一个输出侧的渲染器，接在 `Build` 第 6 步之后、替换第 7 步，把 Clash 结构的 `root` 转成目标格式；上游拉取和输入解析不用动。完整的事项清单（目标判定、透传 UA 的限制、基础配置、规则集链接、响应头）见 [CLIENT-SUPPORT.md](CLIENT-SUPPORT.md)。Stash 用的就是 Clash 格式，不需要渲染器。
@@ -314,6 +340,7 @@ go vet ./... && gofmt -l .
 - `TestExportImport`：两种导出的内容（分享文件里没有链接和令牌）、单组导入是追加、整份导入保留令牌、旧版 `config.json` 能导入、坏文件不改动现有配置
 - `TestAccessLog` / `TestClientIP`：记录的内容与顺序、新 IP 标记、落盘、上限、随订阅组删除；各种对端地址和转发头组合下取到的 IP
 - `TestSeedTemplatesAreConsistent`：内置策略组模板和规则模板任意组合都没有悬空引用
+- `TestRuleNames` / `TestValidateRuleSources`：两种目录结构下清单的筛选和排序、未保存的来源也能拉、各种失败不动已有清单、限流提示、`GITHUB_TOKEN`、清单落盘和清理；保存配置时规则来源的规范化和拒绝条件
 
 ## 已知限制
 
@@ -327,6 +354,7 @@ go vet ./... && gofmt -l .
 - 代理只能通过环境变量配置，所有来源共用，改了要重启服务
 - 会话存内存，重启即失效；不支持多实例共享
 - 规则集只是生成 `rule-providers` 让客户端自己下载，服务端不下载也不校验规则 URL 是否有效
+- 规则清单只能从 GitHub 仓库拉，且只列一层目录；清单不会自动更新。规则来源里「规则名匹配此正则时按 ipcidr」用的是浏览器的正则，不走 `compileRegex`
 - `text` / `mrs` 格式的规则集和部分节点类型需要 mihomo（Clash Meta）内核，原版 Clash 不支持
 - `validate` 不解析逻辑规则（`AND` / `OR` / `NOT`）里的策略名
 - 服务端会访问管理员填写的任意 http(s) 地址（订阅、解锁地址），没有内网地址限制；管理密码泄露等同于可从服务器发起请求

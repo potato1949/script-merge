@@ -17,7 +17,7 @@ func newTestApp(t *testing.T) (a *App, do func(method, path, body string, edit .
 	if err != nil {
 		t.Fatal(err)
 	}
-	a = &App{store: store, fetcher: NewFetcher(dir), access: OpenAccessLog(dir, 0), sessions: map[string]time.Time{}}
+	a = &App{store: store, fetcher: NewFetcher(dir), access: OpenAccessLog(dir, 0), ruleNames: OpenRuleNames(dir), sessions: map[string]time.Time{}}
 	rec := httptest.NewRecorder()
 	a.startSession(rec, httptest.NewRequest("GET", "/", nil))
 	cookie := rec.Result().Cookies()[0]

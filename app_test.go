@@ -463,6 +463,9 @@ func TestMigrateLegacyConfig(t *testing.T) {
 				t.Errorf("「%s」没有拿到共用的策略组和规则: %+v", p.Name, p)
 			}
 		}
+		if len(c.RuleSources) != len(seedRuleSources()) {
+			t.Errorf("旧配置没有补上内置的规则来源: %+v", c.RuleSources)
+		}
 		last := c.Templates[len(c.Templates)-1]
 		if last.Kind != "parser" || last.Parser != "yaml: {}" {
 			t.Errorf("通用 Parser 没有存为模板: %+v", last)
