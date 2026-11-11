@@ -79,6 +79,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/password", a.auth(a.handlePassword))
 	mux.HandleFunc("POST /api/token", a.auth(a.handleResetToken))
 	mux.HandleFunc("GET /api/preview", a.auth(a.handlePreview))
+	mux.HandleFunc("GET /api/export", a.auth(a.handleExport))
+	mux.HandleFunc("POST /api/import", a.auth(a.handleImport))
 	mux.HandleFunc("GET /sub/{token}", a.handleSub)
 	return mux
 }
@@ -404,6 +406,11 @@ func (a *App) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	a.saveConfig(w, c)
+}
+
+// saveConfig 保存已校验过的配置并返回给前端。
+func (a *App) saveConfig(w http.ResponseWriter, c Config) {
 	if err := a.store.SetConfig(c); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

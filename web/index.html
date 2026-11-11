@@ -724,6 +724,40 @@ function tabPreview(p) {
   ];
 }
 
+// 把导出接口的响应存成文件。path 可以是函数：保存之后订阅组的 ID 才确定
+async function download(path) {
+  if (dirty && !(await save())) return;
+  try {
+    const res = await fetch(typeof path === 'function' ? path() : path);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'HTTP ' + res.status);
+    const name = decodeURIComponent((res.headers.get('Content-Disposition') || '').split("''")[1] || 'script-merge.json');
+    const a = h('a', { href: URL.createObjectURL(await res.blob()), download: name });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (err) { toast('导出失败：' + err.message); }
+}
+// 导入整份配置（替换全部）或单个订阅组（追加），由文件内容决定
+function importFile() {
+  const input = h('input', { type: 'file', accept: '.json,application/json' });
+  input.onchange = async () => {
+    const file = input.files[0];
+    if (!file) return;
+    let data;
+    try { data = JSON.parse(await file.text()); } catch { return toast('不是合法的 JSON 文件'); }
+    const single = !!(data && data.profile);
+    if (single) { if (dirty && !(await save())) return; }
+    else if (!confirm('导入整份配置会替换现在的全部订阅组、节点来源、模板和全局设置（管理密码不变）' + (dirty ? '，未保存的修改也会丢失' : '') + '。\n\n建议先导出一份作为备份。继续？')) return;
+    try {
+      cfg = normalize(await api('POST', '/api/import', data)); dirty = false;
+      for (const k of Object.keys(previews)) delete previews[k];
+      tab = 'subs';
+      if (single) { go('group', cfg.profiles.length - 1); toast('已导入订阅组。导出文件不带订阅链接，记得在订阅源里补上'); }
+      else { go('group', 0); toast('已导入配置'); }
+    } catch (err) { toast(err.message); }
+  };
+  input.click();
+}
+
 function tabMore(p) {
   return [
     h('div', { class: 'card' }, h('h3', {}, '订阅链接'),
@@ -736,13 +770,14 @@ function tabMore(p) {
     h('div', { class: 'card' }, h('h3', {}, '显示名称'),
       h('p', { class: 'hint' }, '客户端里显示的配置名称。留空则使用订阅组名称。'),
       field('', p, 'fileName', { placeholder: p.name })),
-    h('div', { class: 'card' }, h('h3', {}, '复制或删除'),
-      h('p', { class: 'hint' }, '复制会得到一个内容相同、链接不同的新订阅组，节点来源与原来的共用。删除在保存修改后生效，它的订阅链接随之失效。'),
+    h('div', { class: 'card' }, h('h3', {}, '复制、导出或删除'),
+      h('p', { class: 'hint' }, '复制会得到一个内容相同、链接不同的新订阅组，节点来源与原来的共用。导出的文件用来分享这套配置：不含订阅链接、解锁地址、手填的节点和令牌，在「全局设置」里导入。删除在保存修改后生效，它的订阅链接随之失效。'),
       h('div', { class: 'row' },
         h('button', { onclick: () => {
           const c = clone(p); c.id = ''; c.token = ''; c.name = p.name + ' 副本';
           cfg.profiles.push(c); markDirty(); tab = 'subs'; go('group', cfg.profiles.length - 1);
         } }, '复制这个订阅组'),
+        h('button', { onclick: () => download(() => '/api/export?profile=' + cur().id) }, '导出这个订阅组'),
         h('button', { class: 'danger', disabled: cfg.profiles.length < 2, title: cfg.profiles.length < 2 ? '至少保留一个订阅组' : null,
           onclick: () => { if (!confirm(`删除订阅组「${p.name}」？`)) return; cfg.profiles.splice(pi, 1); pi = Math.max(0, pi - 1); tab = 'subs'; markDirty(); render(); } }, '删除这个订阅组'))),
   ];
@@ -834,6 +869,11 @@ function settingsPage() {
       h('div', { class: 'card' }, h('h3', {}, '基础配置'),
         h('p', { class: 'hint' }, '所有订阅组输出配置的基础部分（端口、DNS 等）。其中的 proxies / proxy-groups / rules 会被生成内容覆盖。'),
         field('', cfg, 'baseConfig', { type: 'textarea', rows: 16 })),
+      h('div', { class: 'card' }, h('h3', {}, '导出与导入'),
+        h('p', { class: 'hint' }, '导出的文件包含全部订阅组、节点来源、模板和全局设置（含订阅链接和令牌，不含管理密码），可用来备份、回滚或迁移到另一台服务器，请妥善保管。导入整份配置会替换现在的全部内容，客户端里的订阅链接保持可用；导入的如果是单个订阅组的文件（在订阅组的「本组设置」里导出），则是新增一个订阅组。也可以直接导入旧版本的 config.json。'),
+        h('div', { class: 'row' },
+          h('button', { onclick: () => download('/api/export') }, '导出全部配置'),
+          h('button', { onclick: importFile }, '从文件导入…'))),
       h('div', { class: 'card' }, h('h3', {}, '管理密码'),
         envPassword ? h('p', { class: 'hint', style: 'margin:0' }, '密码由环境变量 ADMIN_PASSWORD 管理，如需修改请更改部署配置。') : [
           h('div', { class: 'grid' }, field('原密码', pw, 'old', { type: 'password', local: true }), field('新密码（至少 6 位）', pw, 'new', { type: 'password', local: true })),
