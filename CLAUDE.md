@@ -113,7 +113,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 - 策略组编辑器 `groupsEditor(o)` 和规则编辑器 `rulesEditor(o)` 接收任何带对应字段的对象，订阅组和模板共用；不要在里面用 `cur()`
 
 - 规则仓库的管理在「规则仓库」页（`ruleSourcesPage` + `ruleNamesBox`）：改来源、拉取清单、点规则名置顶 / 取消置顶。规则清单在模块级变量 `ruleNames` 里，启动时和 `cfg` 一起加载，拉取不标记未保存
-- 来源的新建、修改、删除只在「节点来源」页（`sourcesPage` + `sourceFields`）。订阅组的订阅源标签页（`tabSubs`）只能选用已有来源、移除引用、改 `SourceRef` 上的字段，来源内容只读展示（这是用户明确要求的）
+- 已有来源的修改、删除只在「节点来源」页（`sourcesPage` + `sourceFields`），免得在一个组里顺手一改、别的组跟着变。订阅组的节点来源标签页（`tabSubs`）可以选用已有来源、**新建来源**（`newSourceDialog`，新建的同样是全局来源；新来源还没被别的组引用，所以不受上面那条限制）、移除引用、改 `SourceRef` 上的字段，已有来源的内容只读展示
 - 策略组之间、规则到策略组、前置代理都是**按名字引用**的纯文本。策略组改名在输入框失焦时由 `renameGroup` 把同一个订阅组 / 模板里的引用一起改掉（Parser 只提醒）。新增按策略组名引用的字段时要加进 `renameGroup`
 - 订阅组的 ID 由前端 `newID()` 生成（和来源、模板一样），预览结果 `previews` 按它存；判断「还没保存过」看 `p.token` 是否为空
 - `field(label, obj, key, opts)`：绑定到 `obj[key]` 的控件，输入即写回并标记未保存；不属于配置的临时输入传 `local: true`。`onchange` 每输入一个字都触发，`oncommit` 只在文本框改完离开时触发一次

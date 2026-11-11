@@ -258,7 +258,7 @@ Config
 - **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页，每个对应一个 `tabXxx(p)` 函数，操作当前订阅组 `p`
 - **`field(label, obj, key, opts)`**：绑定到 `obj[key]` 的表单控件，输入时写回并标记「未保存」。不属于配置的临时输入（预览 UA、对话框草稿）传 `local: true`。`onchange` 每输入一个字都触发；`oncommit` 只在文本框改完离开时触发一次，用于「改完才能做」的事（策略组改名的级联）
 - **`item(obj, opts)`**：可展开的行（节点来源、策略组、模板都用它）。展开状态记在 `openItems`（WeakSet，按对象引用），所以重绘和排序后仍保持展开。`body(nameEl)` 只在展开时才构建；改名时直接更新 `nameEl` 而不重绘，避免输入框失焦
-- **编辑器与页面分离**：策略组编辑器 `groupsEditor(o)`、规则编辑器 `rulesEditor(o)` 接收任何带 `groups` / `ruleSets` 等字段的对象，订阅组的标签页（`tabGroups` / `tabRules`）和「模板」页共用它们。规则里「策略」输入框的候选由 `policyNames(o)` 给出：订阅组有策略组可列；规则模板没有，只列已经用到的策略，其余自由输入。来源的表单 `sourceFields(s)` 只在「节点来源」页使用：订阅组的订阅源标签页（`tabSubs`）只能选用已有来源、设置本组的启用 / 前缀 / 过滤 / 前置代理，来源内容只读展示（`sourceSummary`），新建、修改、删除来源都要到「节点来源」页（`editSource` 跳转过去并展开）。写这类编辑器时不要用 `cur()`，同一页上可能同时展开好几个，`datalist` 的 id 用 `nextId()` 生成
+- **编辑器与页面分离**：策略组编辑器 `groupsEditor(o)`、规则编辑器 `rulesEditor(o)` 接收任何带 `groups` / `ruleSets` 等字段的对象，订阅组的标签页（`tabGroups` / `tabRules`）和「模板」页共用它们。规则里「策略」输入框的候选由 `policyNames(o)` 给出：订阅组有策略组可列；规则模板没有，只列已经用到的策略，其余自由输入。来源的表单 `sourceFields(s, onName, local)` 用在「节点来源」页，以及订阅组里的新建对话框（`newSourceDialog`，`local` 表示 `s` 是还没加进配置的草稿）。订阅组的节点来源标签页（`tabSubs`）可以选用已有来源、新建来源、设置本组的启用 / 前缀 / 过滤 / 前置代理；已有来源的内容只读展示（`sourceSummary`），修改和删除要到「节点来源」页（`editSource` 跳转过去并展开）。只限制修改而不限制新建，是因为限制的目的是防止在一个组里顺手一改、别的组跟着变，而新来源还没被别的组引用。写这类编辑器时不要用 `cur()`，同一页上可能同时展开好几个，`datalist` 的 id 用 `nextId()` 生成
 - **`item` 可以嵌套**（模板行里展开策略组行）。CSS 里和展开 / 停用状态有关的选择器要用子代选择器（`.item.open > .item-head …`），否则外层的状态会套到内层上
 - **`toolbar(hint, kind, p)`**：订阅组里「套用模板」按钮和差异提示。提示的刷新函数挂在模块级的 `liveHint` 上，`markDirty()` 时调用，`render()` 开头清掉
 - **`dialog(title, build, actions)`**：基于原生 `<dialog>` 的对话框，套用模板、添加节点来源、新建订阅组都用它

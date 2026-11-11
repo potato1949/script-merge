@@ -480,21 +480,23 @@ function groupPage() {
   ];
 }
 
-// 来源本身的表单项（名称、链接等），只在「节点来源」页使用。来源是全局的：改了之后引用它的订阅组都跟着变
-function sourceFields(s, onName) {
+// 来源本身的表单项（名称、链接等）。来源是全局的：改了之后引用它的订阅组都跟着变，所以已有来源只在「节点来源」页修改。
+// local：s 是新建对话框里还没加进配置的草稿，输入时不标记「未保存」
+function sourceFields(s, onName, local) {
   return [
-    field('名称', s, 'name', { onchange: onName }),
-    s.kind === 'manual' ? field('节点（Clash YAML 数组，或每行一条 ss / vmess / trojan / vless / hysteria2 分享链接）', s, 'nodes', { type: 'textarea', rows: 8, wide: true,
+    field('名称', s, 'name', { onchange: onName, local }),
+    s.kind === 'manual' ? field('节点（Clash YAML 数组，或每行一条 ss / vmess / trojan / vless / hysteria2 分享链接）', s, 'nodes', { type: 'textarea', rows: 8, wide: true, local,
       placeholder: '- {name: 我的节点, type: ss, server: 1.2.3.4, port: 8388, cipher: aes-256-gcm, password: xxx}\n或\nss://…#节点名' }) : [
-      field('拉取上游时使用的 UA', s, 'uaMode', { options: [['passthrough', '透传客户端的 UA'], ['fixed', '固定 UA（全局设置）']], onchange: render }),
-      field('订阅链接（Clash 格式，或分享链接列表）', s, 'url', { wide: true, placeholder: 'https://…' }),
-      field('解锁地址（可选，每次拉取前先访问一次）', s, 'unlockUrl', { wide: true, placeholder: 'https://…' }),
+      field('拉取上游时使用的 UA', s, 'uaMode', { options: [['passthrough', '透传客户端的 UA'], ['fixed', '固定 UA（全局设置）']], onchange: local ? null : render, local }),
+      field('订阅链接（Clash 格式，或分享链接列表）', s, 'url', { wide: true, placeholder: 'https://…', local }),
+      field('解锁地址（可选，每次拉取前先访问一次）', s, 'unlockUrl', { wide: true, placeholder: 'https://…', local }),
     ],
   ];
 }
 const sourceChips = s => s.kind === 'manual' ? ['手动节点'] : [s.uaMode === 'passthrough' ? '透传 UA' : '固定 UA', s.unlockUrl.trim() && '需解锁'];
+const blankSource = kind => ({ id: newID(), kind, name: kind === 'manual' ? '手动节点' : '订阅 ' + (cfg.sources.filter(x => x.kind !== 'manual').length + 1), nodes: '', url: '', uaMode: 'passthrough', unlockUrl: '' });
 function newSource(kind) {
-  const s = { id: newID(), kind, name: kind === 'manual' ? '手动节点' : '订阅 ' + (cfg.sources.filter(x => x.kind !== 'manual').length + 1), nodes: '', url: '', uaMode: 'passthrough', unlockUrl: '' };
+  const s = blankSource(kind);
   cfg.sources.push(s);
   return s;
 }
@@ -535,14 +537,15 @@ function stateLine(s) {
   return h('div', { class: 'sublabel' }, text);
 }
 
-// 订阅组里只引用「节点来源」页的来源：这里只能选用、移除和设置本组的前缀 / 过滤，来源本身的内容只读，修改要到「节点来源」页
+// 订阅组里只引用全局的节点来源：这里可以选用、新建（新建的同样是全局来源）、移除和设置本组的前缀 / 过滤；
+// 已有来源的内容只读，修改要到「节点来源」页，免得在一个组里顺手一改、别的组跟着变
 const editSource = s => { if (s) openItems.add(s); go('sources'); };
 function tabSubs(p) {
   const status = previews[p.id]?.subs || [], dialerList = nextId('dialers');
   const use = s => { const r = { source: s.id, enabled: true, prefix: '', include: '', exclude: '', dialer: '' }; p.sources.push(r); openItems.add(r); markDirty(); render(); };
   return [
     datalist(dialerList, p.groups.map(g => g.name).filter(Boolean)),
-    p.sources.length === 0 ? empty('还没有节点来源', cfg.sources.length > 0 ? '从「节点来源」里选择要用的来源，它们会合并成这个订阅组的输出。' : '先到「节点来源」页添加订阅链接或手动节点，再回到这里选用。')
+    p.sources.length === 0 ? empty('还没有节点来源', cfg.sources.length > 0 ? '点下面的「添加节点来源」，选用已有的来源或新建一个。选用的来源会合并成这个订阅组的输出。' : '点下面的「添加节点来源」，新建订阅链接或手动节点。')
       : h('div', { class: 'list' }, p.sources.map((r, i) => {
         const s = srcOf(r.source), others = usersOf(s.id).filter(x => x !== p);
         const st = status.find(x => x.index === i && x.id === s.id);
@@ -569,9 +572,9 @@ function tabSubs(p) {
         });
       })),
     h('div', { class: 'row' },
-      cfg.sources.length > 0 && h('button', { onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源'),
-      h('button', { onclick: () => editSource() }, cfg.sources.length > 0 ? '管理节点来源' : '到「节点来源」页添加')),
-    h('p', { class: 'hint', style: 'margin-top:16px' }, '这里只引用「节点来源」页里的来源：名称、链接、UA 模式等在那里新建和修改，改一次所有用到它的订阅组都生效；是否启用、前缀、过滤和前置代理由各组自己设置。从这里移除只是不再使用，来源本身还在。「客户端」指用本组订阅链接来更新的软件。透传 UA 时，客户端用什么 UA 来拉取，就用什么 UA 去拉上游；客户端没带 UA 时用固定 UA。固定 UA 和缓存时间在「全局设置」里调整。'),
+      h('button', { onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源'),
+      cfg.sources.length > 0 && h('button', { onclick: () => editSource() }, '管理节点来源')),
+    h('p', { class: 'hint', style: 'margin-top:16px' }, '节点来源是各订阅组共用的：可以在这里新建，但已有来源的名称、链接、UA 模式等只在「节点来源」页修改，改一次所有用到它的订阅组都生效；是否启用、前缀、过滤和前置代理由各组自己设置。从这里移除只是不再使用，来源本身还在。「客户端」指用本组订阅链接来更新的软件。透传 UA 时，客户端用什么 UA 来拉取，就用什么 UA 去拉上游；客户端没带 UA 时用固定 UA。固定 UA 和缓存时间在「全局设置」里调整。'),
   ];
 }
 // 来源内容的只读概述（订阅组里展示用）
@@ -586,9 +589,25 @@ function pickSourceDialog(p, use) {
     h('b', {}, s.name || '(未命名)'), sourceChips(s).filter(Boolean).map(c => h('span', { class: 'chip' }, c)),
     p.sources.some(r => r.source === s.id) && h('span', { class: 'chip' }, '本组已添加'))));
   draw();
-  dialog('添加节点来源', () => [
-    h('p', { class: 'hint' }, `从「节点来源」里选一个加到「${p.name}」。来源本身（链接、UA 模式等）是共用的，只能在「节点来源」页修改；前缀和过滤各组单独设置。`), pickEl,
-  ], [{ label: '添加到本组', primary: true, onclick: close => { close(); use(picked); } }]);
+  dialog('添加节点来源', close => [
+    cfg.sources.length > 0
+      ? [h('p', { class: 'hint' }, `从已有的节点来源里选一个加到「${p.name}」，或者新建一个。来源本身（链接、UA 模式等）是共用的，以后修改要到「节点来源」页；前缀和过滤各组单独设置。`), pickEl]
+      : h('p', { class: 'hint' }, '还没有节点来源，先新建一个。'),
+    h('div', { class: 'row', style: 'margin-top:12px' },
+      h('button', { class: 'sm', onclick: () => { close(); newSourceDialog(p, 'remote', use); } }, '+ 新建订阅链接'),
+      h('button', { class: 'sm', onclick: () => { close(); newSourceDialog(p, 'manual', use); } }, '+ 新建手动节点')),
+  ], cfg.sources.length > 0 ? [{ label: '添加到本组', primary: true, onclick: close => { close(); use(picked); } }] : []);
+}
+// 在订阅组里直接新建来源：新来源还没被任何组引用，不存在「改了影响别的组」的问题，所以不必绕到「节点来源」页
+function newSourceDialog(p, kind, use) {
+  const s = blankSource(kind);
+  dialog(kind === 'manual' ? '新建手动节点' : '新建订阅链接', () => [
+    h('p', { class: 'hint' }, `新建的来源会加到「${p.name}」，同时出现在「节点来源」页，其他订阅组也可以选用。以后要修改它，到「节点来源」页。`),
+    sourceFields(s, null, true),
+  ], [{ label: '新建并添加到本组', primary: true, onclick: close => {
+    if (!(kind === 'manual' ? s.nodes : s.url).trim()) return alert(kind === 'manual' ? '请填写节点' : '请填写订阅链接');
+    close(); cfg.sources.push(s); use(s);
+  } }]);
 }
 
 // 「套用模板」工具栏，以及「来自模板 X」的差异提示
@@ -897,7 +916,7 @@ function sourcesPage() {
   return [
     h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '节点来源'), saveControls())),
     h('div', { class: 'content' },
-      h('p', { class: 'hint' }, '所有订阅组可以使用的节点来源。新建、修改、删除都只在这里进行，订阅组里只能选用。一个来源可以被多个订阅组引用：链接、UA 模式、解锁地址在这里改一次，各组都生效；是否启用、前缀和过滤由各订阅组自己决定。'),
+      h('p', { class: 'hint' }, '所有订阅组可以使用的节点来源。修改和删除只在这里进行；订阅组里可以选用已有的，也可以直接新建（新建的同样出现在这里）。一个来源可以被多个订阅组引用：链接、UA 模式、解锁地址在这里改一次，各组都生效；是否启用、前缀和过滤由各订阅组自己决定。'),
       cfg.sources.length === 0 ? empty('还没有节点来源', '在这里添加订阅链接或手动节点，再到订阅组的「节点来源」页选用。')
         : h('div', { class: 'list' }, cfg.sources.map(s => {
           const users = usersOf(s.id);
@@ -911,7 +930,7 @@ function sourcesPage() {
               markDirty(); render();
             } }, '删除'),
             body: nameEl => [
-              h('div', { class: 'sublabel' }, users.length > 0 ? `正在使用它的订阅组：${quote(users)}` : '还没有订阅组使用它。到订阅组的「订阅源」页点「添加节点来源」选用。'),
+              h('div', { class: 'sublabel' }, users.length > 0 ? `正在使用它的订阅组：${quote(users)}` : '还没有订阅组使用它。到订阅组的「节点来源」页点「添加节点来源」选用或新建。'),
               stateLine(s),
               h('div', { class: 'grid' }, sourceFields(s, v => { nameEl.textContent = v || '(未命名)'; })),
             ],
