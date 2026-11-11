@@ -234,7 +234,8 @@ const app = document.getElementById('app');
 let cfg = null, dirty = false, envPassword = false, busy = false;
 let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / templates / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
-const ui = { previewUA: UA_PRESETS[0] };
+const accessLog = {};          // 订阅组 ID → 访问记录（加载中为 null）
+const ui = { previewUA: UA_PRESETS[0], accessAll: false };
 let liveHint = null;           // 当前页面上「来自模板 X」提示的刷新函数，内容一改就调用
 let uid = 0;                   // 给 datalist 生成不重复的 id
 const nextId = prefix => prefix + (++uid);
@@ -749,13 +750,42 @@ function importFile() {
     else if (!confirm('导入整份配置会替换现在的全部订阅组、节点来源、模板和全局设置（管理密码不变）' + (dirty ? '，未保存的修改也会丢失' : '') + '。\n\n建议先导出一份作为备份。继续？')) return;
     try {
       cfg = normalize(await api('POST', '/api/import', data)); dirty = false;
-      for (const k of Object.keys(previews)) delete previews[k];
+      for (const store of [previews, accessLog]) for (const k of Object.keys(store)) delete store[k];
       tab = 'subs';
       if (single) { go('group', cfg.profiles.length - 1); toast('已导入订阅组。导出文件不带订阅链接，记得在订阅源里补上'); }
       else { go('group', 0); toast('已导入配置'); }
     } catch (err) { toast(err.message); }
   };
   input.click();
+}
+
+async function loadAccess(id) {
+  accessLog[id] = null;
+  try { accessLog[id] = (await api('GET', '/api/access?profile=' + id)).records; } catch { accessLog[id] = []; }
+  if (page === 'group' && tab === 'more' && cur().id === id) render();
+}
+function accessCard(p) {
+  if (!p.id) return null; // 还没保存的订阅组没有链接，也就没有记录
+  if (!(p.id in accessLog)) loadAccess(p.id);
+  const all = accessLog[p.id] || [], shown = ui.accessAll ? all : all.slice(0, 15);
+  const week = Date.now() - 7 * 864e5, fresh = all.filter(r => r.newIp && new Date(r.time) > week).length;
+  const time = t => new Date(t).toLocaleString('zh-CN', { hour12: false });
+  return h('div', { class: 'card' }, h('h3', {}, '访问记录'),
+    h('p', { class: 'hint' }, '这个订阅链接最近被拉取的情况（最多保留 100 次）。可以看出各个客户端有没有在正常更新；出现不认识的 IP 或客户端，说明链接可能泄露了，可以在上面重置链接。部署在反向代理后面时，IP 取自 X-Forwarded-For。'),
+    fresh > 0 && h('div', { class: 'warnbox' }, `最近 7 天有 ${fresh} 次拉取来自此前没出现过的 IP（下面标了「新 IP」）。换了网络或设备属于正常情况，否则考虑重置链接。`),
+    accessLog[p.id] == null ? h('p', { class: 'hint', style: 'margin:0' }, '正在加载…')
+      : all.length === 0 ? h('p', { class: 'hint', style: 'margin:0 0 12px' }, '还没有客户端拉取过这个链接。')
+      : h('div', { class: 'tblwrap', style: 'margin-bottom:12px' }, h('table', {},
+        h('tr', {}, ['时间', 'IP', '客户端 UA', '结果'].map(t => h('th', {}, t))),
+        shown.map(r => h('tr', {},
+          h('td', { style: 'white-space:nowrap' }, time(r.time)),
+          h('td', { style: 'white-space:nowrap' }, r.ip, r.newIp && h('span', { class: 'chip', style: 'margin-left:6px' }, '新 IP')),
+          h('td', { class: 'clip', title: r.ua }, r.ua || '(没带 UA)'),
+          h('td', {}, r.status === 200 ? h('span', { class: 'tag ok' }, `${r.nodes} 个节点`) : h('span', { class: 'tag err' }, r.status === 502 ? '失败：没有可用节点' : '失败：HTTP ' + r.status)))))),
+    accessLog[p.id] != null && h('div', { class: 'row' },
+      h('button', { class: 'sm', onclick: () => loadAccess(p.id) }, '刷新'),
+      all.length > 15 && h('button', { class: 'sm', onclick: () => { ui.accessAll = !ui.accessAll; render(); } }, ui.accessAll ? '只显示最近 15 次' : `显示全部 ${all.length} 次`),
+      all.length > 0 && h('button', { class: 'sm danger', onclick: async () => { if (!confirm('清空这个订阅组的访问记录？')) return; try { await api('DELETE', '/api/access?profile=' + p.id); accessLog[p.id] = []; render(); } catch (err) { toast(err.message); } } }, '清空记录')));
 }
 
 function tabMore(p) {
@@ -767,6 +797,7 @@ function tabMore(p) {
           h('button', { onclick: () => copyText(subLink(p), '已复制订阅链接') }, '复制'),
           h('button', { class: 'danger', onclick: async () => { if (!confirm('重置后旧链接立即失效，确定？')) return; if (dirty && !(await save())) return; cfg = normalize(await api('POST', '/api/token', { profile: cur().id })); render(); toast('已重置链接'); } }, '重置链接')),
       ] : h('p', { class: 'hint', style: 'margin:0' }, '保存修改后生成这个订阅组的订阅链接。')),
+    accessCard(p),
     h('div', { class: 'card' }, h('h3', {}, '显示名称'),
       h('p', { class: 'hint' }, '客户端里显示的配置名称。留空则使用订阅组名称。'),
       field('', p, 'fileName', { placeholder: p.name })),

@@ -29,6 +29,7 @@ const (
 type App struct {
 	store       *Store
 	fetcher     *Fetcher
+	access      *AccessLog
 	envPassword string // 来自 ADMIN_PASSWORD；非空时网页端不可修改密码
 
 	mu       sync.Mutex
@@ -52,6 +53,7 @@ func main() {
 	app := &App{
 		store:       store,
 		fetcher:     NewFetcher(dataDir),
+		access:      OpenAccessLog(dataDir, 2*time.Second),
 		envPassword: os.Getenv("ADMIN_PASSWORD"),
 		sessions:    map[string]time.Time{},
 	}
@@ -81,6 +83,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/preview", a.auth(a.handlePreview))
 	mux.HandleFunc("GET /api/export", a.auth(a.handleExport))
 	mux.HandleFunc("POST /api/import", a.auth(a.handleImport))
+	mux.HandleFunc("GET /api/access", a.auth(a.handleGetAccess))
+	mux.HandleFunc("DELETE /api/access", a.auth(a.handleClearAccess))
 	mux.HandleFunc("GET /sub/{token}", a.handleSub)
 	return mux
 }
@@ -409,12 +413,17 @@ func (a *App) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	a.saveConfig(w, c)
 }
 
-// saveConfig 保存已校验过的配置并返回给前端。
+// saveConfig 保存已校验过的配置并返回给前端，同时清掉已删除订阅组的访问记录。
 func (a *App) saveConfig(w http.ResponseWriter, c Config) {
 	if err := a.store.SetConfig(c); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	keep := map[string]bool{}
+	for _, p := range c.Profiles {
+		keep[p.ID] = true
+	}
+	a.access.Prune(keep)
 	writeJSON(w, http.StatusOK, c)
 }
 
@@ -484,12 +493,17 @@ func (a *App) handleSub(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	res, err := Build(cfg, *p, a.fetcher, clientUA(r.UserAgent()), r.URL.Query().Get("refresh") == "1")
+	ua := clientUA(r.UserAgent())
+	rec := AccessRecord{Time: time.Now(), IP: clientIP(r), UA: ua, Status: http.StatusOK}
+	defer func() { a.access.Add(p.ID, rec) }()
+	res, err := Build(cfg, *p, a.fetcher, ua, r.URL.Query().Get("refresh") == "1")
 	if err != nil {
 		log.Printf("生成订阅失败: %v", err)
+		rec.Status = http.StatusInternalServerError
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	rec.Nodes = res.Total
 	for _, s := range res.Subs {
 		if s.Error != "" {
 			log.Printf("订阅「%s」拉取失败（使用旧缓存: %v）: %s", s.Name, s.Stale, s.Error)
@@ -497,6 +511,7 @@ func (a *App) handleSub(w http.ResponseWriter, r *http.Request) {
 	}
 	if res.Total == 0 {
 		// 不返回空配置，避免客户端用它覆盖掉可用的旧配置
+		rec.Status = http.StatusBadGateway
 		http.Error(w, "没有可用节点：所有订阅均拉取失败或未配置订阅", http.StatusBadGateway)
 		return
 	}
