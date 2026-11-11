@@ -267,7 +267,7 @@ func validateConfig(c *Config, tokens map[string]string) error {
 			return errors.New("全局设置里的 UA 不能超过 256 个字符，也不能包含换行等控制字符")
 		}
 	}
-	// ID 只接受服务端生成的格式（前端新建来源时也按这个格式生成，以便保存前就能被引用）：
+	// ID 只接受服务端生成的格式（前端新建来源、模板时也按这个格式生成，以便保存前就能互相引用）：
 	// 来源 ID 用作缓存文件名，订阅组 ID 用于保留令牌。格式不对或重复的一律重新生成
 	ids := map[string]bool{}
 	fixID := func(id *string) {

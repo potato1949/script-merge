@@ -78,15 +78,17 @@ main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .item-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .chev { flex: none; width: 14px; display: inline-flex; justify-content: center; color: var(--muted); }
 .chev::before { content: ""; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(-45deg); transition: transform .15s; }
-.item.open .chev::before { transform: rotate(45deg); }
+.item.open > .item-head .chev::before { transform: rotate(45deg); }
 .item-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.item.off .item-name { color: var(--muted); font-weight: 400; }
+.item.off > .item-head .item-name { color: var(--muted); font-weight: 400; }
 .chip { flex: none; font-size: 12px; padding: 1px 8px; border-radius: 6px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
 .item-ctl { margin-left: auto; display: flex; gap: 4px; flex: none; }
 .item-body { padding: 4px 16px 18px 38px; }
 .empty { border: 1px dashed var(--line-strong); border-radius: 12px; padding: 28px 20px; text-align: center; color: var(--muted); margin-bottom: 14px; }
 .empty b { display: block; color: var(--text); font: 600 16px/1.4 var(--serif); margin-bottom: 4px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.section-head { display: flex; align-items: center; gap: 10px; margin: 26px 0 10px; }
+.section-head .section-title { margin: 0 auto 0 0; }
 .subhead { font-weight: 600; font-size: 13px; margin: 16px 0 8px; }
 .subhead small { font-weight: 400; color: var(--muted); margin-left: 8px; }
 
@@ -229,10 +231,12 @@ let cfg = null, dirty = false, envPassword = false, busy = false;
 let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / templates / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
 const ui = { previewUA: UA_PRESETS[0] };
+let uid = 0;                   // 给 datalist 生成不重复的 id
+const nextId = prefix => prefix + (++uid);
 const openItems = new WeakSet(); // 当前展开的行
 const cur = () => cfg.profiles[pi];
 const clone = v => JSON.parse(JSON.stringify(v));
-// 和服务端生成的 ID 同一种格式（16 位十六进制），这样新建的来源在保存前就能被引用
+// 和服务端生成的 ID 同一种格式（16 位十六进制），这样新建的来源、模板在保存前就能被引用
 const newID = () => [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, '0')).join('');
 const srcOf = id => cfg.sources.find(s => s.id === id);
 const usersOf = id => cfg.profiles.filter(p => p.sources.some(r => r.source === id)); // 引用了某个来源的订阅组
@@ -306,7 +310,8 @@ function listButtons(list, i, remove) {
   ];
 }
 const datalist = (id, values) => h('datalist', { id }, values.map(v => h('option', { value: v })));
-const policyNames = () => [...cur().groups.map(g => g.name).filter(Boolean), 'DIRECT', 'REJECT'];
+// 规则里「策略」输入框的候选：o 是订阅组时先列它的策略组；规则模板没有策略组可取，只列已经用到的策略，其余自由输入
+const policyNames = o => [...new Set([...o.groups.map(g => g.name), ...o.ruleSets.map(r => r.policy), 'DIRECT', 'REJECT'].filter(Boolean))];
 const empty = (title, text) => h('div', { class: 'empty' }, h('b', {}, title), text);
 
 // 可展开的行。o: { name, lead, chips, status, controls, off, body(nameEl) }
@@ -495,12 +500,10 @@ function pickSourceDialog(p, use) {
   ], [{ label: '添加到本组', primary: true, onclick: close => { close(); use(picked); } }]);
 }
 
-// 「套用模板」「存为模板」工具栏
+// 「套用模板」工具栏
 function toolbar(hint, kind) {
   return h('div', { class: 'toolbar' }, h('p', { class: 'hint' }, hint),
-    h('div', { class: 'row' },
-      h('button', { onclick: () => applyTemplateDialog(kind) }, '套用模板'),
-      h('button', { onclick: () => saveTemplateDialog(kind) }, '存为模板')));
+    h('div', { class: 'row' }, h('button', { onclick: () => applyTemplateDialog(kind) }, '套用模板')));
 }
 function applyTemplateDialog(kind) {
   const K = KINDS[kind], list = cfg.templates.filter(t => t.kind === kind);
@@ -509,27 +512,11 @@ function applyTemplateDialog(kind) {
   const draw = () => pickEl.replaceChildren(...list.map(t => h('button', { class: t === picked ? 'on' : '', onclick: () => { picked = t; draw(); } }, h('b', {}, t.name), h('span', { class: 'chip' }, K.summary(t)))));
   draw();
   dialog(`套用${K.label}模板`, () => list.length === 0
-    ? h('p', { class: 'hint' }, `还没有${K.label}模板。在任意订阅组里把${K.label}配置好，点「存为模板」就能在这里选用。`)
+    ? h('p', { class: 'hint' }, `还没有${K.label}模板。到左栏的「模板」页新建一个。`)
     : [h('p', { class: 'hint' }, `模板内容会复制到「${cur().name}」，替换它现在的${K.label}。之后再改，模板和订阅组互不影响。`), pickEl],
   list.length === 0 ? [] : [{ label: '套用并替换', primary: true, onclick: close => {
     for (const f of K.fields) cur()[f] = clone(picked[f]);
     markDirty(); close(); render(); toast(`已套用「${picked.name}」`);
-  } }]);
-}
-function saveTemplateDialog(kind) {
-  const K = KINDS[kind], draft = { name: `${cur().name}的${K.label}` };
-  dialog(`把当前${K.label}存为模板`, () => [
-    h('p', { class: 'hint' }, `保存「${cur().name}」当前的${K.label}，供其他订阅组套用。用已有模板的名字会覆盖它。`),
-    field('模板名称', draft, 'name', { local: true }),
-  ], [{ label: '存为模板', primary: true, onclick: close => {
-    const name = draft.name.trim();
-    if (!name) return toast('请填写模板名称');
-    const old = cfg.templates.find(t => t.kind === kind && t.name === name);
-    if (old && !confirm(`已有同名模板「${name}」，覆盖它？`)) return;
-    const tpl = old || { id: '', kind, name, groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '' };
-    for (const f of K.fields) tpl[f] = clone(cur()[f]);
-    if (!old) cfg.templates.push(tpl);
-    markDirty(); close(); render(); toast('已存为模板，保存修改后生效');
   } }]);
 }
 function newGroupDialog() {
@@ -553,14 +540,14 @@ function groupSummary(g) {
   const nodes = g.nodes === 'all' ? '全部节点' : g.nodes === 'filter' ? '正则筛选节点' : '';
   return [nodes, fixed > 0 && `固定成员 ${fixed}`].filter(Boolean);
 }
-function tabGroups(p) {
+// 策略组编辑器。o 是任何带 groups 字段的对象：订阅组或策略组模板
+function groupsEditor(o, emptyText) {
   return [
-    toolbar('策略组按列表顺序输出。「固定成员」可填其他策略组名、DIRECT、REJECT 或具体节点名，排在节点之前。', 'groups'),
-    p.groups.length === 0 ? empty('还没有策略组', '套用一个模板，或从空白开始添加。')
-      : h('div', { class: 'list' }, p.groups.map((g, i) => item(g, {
+    o.groups.length === 0 ? empty('还没有策略组', emptyText)
+      : h('div', { class: 'list' }, o.groups.map((g, i) => item(g, {
         name: g.name,
         chips: [GROUP_TYPES.find(t => t[0] === g.type)?.[1] || g.type, ...groupSummary(g)],
-        controls: listButtons(p.groups, i),
+        controls: listButtons(o.groups, i),
         body: nameEl => h('div', { class: 'grid' },
           field('名称', g, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
           field('类型', g, 'type', { options: GROUP_TYPES, onchange: render }),
@@ -570,46 +557,59 @@ function tabGroups(p) {
           g.type !== 'select' && field('测速间隔（秒）', g, 'interval', { type: 'number', min: 0 }),
           field('固定成员（每行一个）', g, 'extra', { type: 'textarea', lines: true, rows: 3, wide: true })),
       }))),
-    h('button', { onclick: () => { const g = { name: '', type: 'select', extra: [], nodes: 'filter', filter: '', testUrl: '', interval: 300 }; p.groups.push(g); openItems.add(g); markDirty(); render(); } }, '+ 添加策略组'),
+    h('button', { onclick: () => { const g = { name: '', type: 'select', extra: [], nodes: 'filter', filter: '', testUrl: '', interval: 300 }; o.groups.push(g); openItems.add(g); markDirty(); render(); } }, '+ 添加策略组'),
+  ];
+}
+function tabGroups(p) {
+  return [
+    toolbar('策略组按列表顺序输出。「固定成员」可填其他策略组名、DIRECT、REJECT 或具体节点名，排在节点之前。', 'groups'),
+    groupsEditor(p, '套用一个模板，或从空白开始添加。'),
   ];
 }
 
-function tabRules(p) {
-  const add = { src: 'bm7', name: '', policy: policyNames()[0] };
-  const nameList = datalist('rsnames', RULE_SOURCES[add.src].names);
+// 规则编辑器。o 是任何带 rulesBefore / ruleSets / rulesAfter 字段的对象：订阅组或规则模板
+function rulesEditor(o) {
+  const policies = policyNames(o), policyList = nextId('policies'), nameListId = nextId('rsnames');
+  const add = { src: 'bm7', name: '', policy: policies[0] };
+  const nameList = datalist(nameListId, RULE_SOURCES[add.src].names);
   const addSet = () => {
     const src = RULE_SOURCES[add.src], n = add.name.trim();
     if (!n) return toast('请填写规则名称');
     const behavior = src.behavior(n);
-    p.ruleSets.push({ name: src.id(n), url: src.url(n), behavior, format: src.format, policy: add.policy, noResolve: behavior === 'ipcidr', enabled: true });
+    o.ruleSets.push({ name: src.id(n), url: src.url(n), behavior, format: src.format, policy: add.policy, noResolve: behavior === 'ipcidr', enabled: true });
     markDirty(); render();
   };
   return [
-    datalist('policies', policyNames()),
-    toolbar('最终规则顺序：前置规则 → 规则集（按下表顺序）→ 后置规则。Clash 自上而下匹配，命中即止。', 'rules'),
+    datalist(policyList, policies),
     h('div', { class: 'card' }, h('h3', {}, '前置规则'), h('p', { class: 'hint' }, '每行一条，例：DOMAIN-SUFFIX,example.com,DIRECT'),
-      field('', p, 'rulesBefore', { type: 'textarea', rows: 4 })),
+      field('', o, 'rulesBefore', { type: 'textarea', rows: 4 })),
     h('div', { class: 'card' }, h('h3', {}, '第三方规则集'),
       h('p', { class: 'hint' }, '以 rule-providers 方式输出，由客户端自行下载更新。可从预设快速添加，也可手填任意规则 URL。'),
       h('div', { class: 'row', style: 'margin-bottom:10px' }, nameList,
         h('div', { style: 'flex:2 1 220px' }, field('', add, 'src', { local: true, options: Object.entries(RULE_SOURCES).map(([k, v]) => [k, v.label]), onchange: v => nameList.replaceChildren(...RULE_SOURCES[v].names.map(n => h('option', { value: n }))) })),
-        h('div', { style: 'flex:1 1 140px' }, field('', add, 'name', { local: true, list: 'rsnames', placeholder: '规则名，如 OpenAI' })),
-        h('div', { style: 'flex:1 1 140px' }, field('', add, 'policy', { local: true, list: 'policies', placeholder: '策略' })),
+        h('div', { style: 'flex:1 1 140px' }, field('', add, 'name', { local: true, list: nameListId, placeholder: '规则名，如 OpenAI' })),
+        h('div', { style: 'flex:1 1 140px' }, field('', add, 'policy', { local: true, list: policyList, placeholder: '策略' })),
         h('button', { onclick: addSet }, '+ 从预设添加'),
-        h('button', { onclick: () => { p.ruleSets.push({ name: '', url: '', behavior: 'classical', format: 'yaml', policy: policyNames()[0], noResolve: false, enabled: true }); markDirty(); render(); } }, '+ 手动添加')),
-      p.ruleSets.length > 0 && h('div', { class: 'tblwrap' }, h('table', {},
+        h('button', { onclick: () => { o.ruleSets.push({ name: '', url: '', behavior: 'classical', format: 'yaml', policy: policies[0], noResolve: false, enabled: true }); markDirty(); render(); } }, '+ 手动添加')),
+      o.ruleSets.length > 0 && h('div', { class: 'tblwrap' }, h('table', {},
         h('tr', {}, ['启用', '名称', 'URL', '类型', '格式', '策略', 'no-resolve', ''].map(t => h('th', {}, t))),
-        p.ruleSets.map((r, i) => h('tr', {},
+        o.ruleSets.map((r, i) => h('tr', {},
           h('td', {}, field('', r, 'enabled', { type: 'checkbox', aria: '启用' })),
           h('td', { style: 'width:130px' }, field('', r, 'name')),
           h('td', {}, field('', r, 'url')),
           h('td', { style: 'width:105px' }, field('', r, 'behavior', { options: [['classical', 'classical'], ['domain', 'domain'], ['ipcidr', 'ipcidr']] })),
           h('td', { style: 'width:80px' }, field('', r, 'format', { options: [['yaml', 'yaml'], ['text', 'text'], ['mrs', 'mrs']] })),
-          h('td', { style: 'width:140px' }, field('', r, 'policy', { list: 'policies' })),
+          h('td', { style: 'width:140px' }, field('', r, 'policy', { list: policyList })),
           h('td', {}, field('', r, 'noResolve', { type: 'checkbox', aria: 'no-resolve' })),
-          h('td', { style: 'white-space:nowrap' }, listButtons(p.ruleSets, i))))))),
+          h('td', { style: 'white-space:nowrap' }, listButtons(o.ruleSets, i))))))),
     h('div', { class: 'card' }, h('h3', {}, '后置规则'), h('p', { class: 'hint' }, '通常放 GEOIP 与兜底的 MATCH 规则。'),
-      field('', p, 'rulesAfter', { type: 'textarea', rows: 4 })),
+      field('', o, 'rulesAfter', { type: 'textarea', rows: 4 })),
+  ];
+}
+function tabRules(p) {
+  return [
+    toolbar('最终规则顺序：前置规则 → 规则集（按下表顺序）→ 后置规则。Clash 自上而下匹配，命中即止。', 'rules'),
+    rulesEditor(p),
   ];
 }
 
@@ -619,7 +619,7 @@ function tabParser(p) {
     field('', p, 'parser', { type: 'textarea', rows: 20, placeholder: PARSER_EXAMPLE }),
     h('div', { class: 'gap' }),
     h('div', { class: 'row' },
-      h('button', { class: 'sm', onclick: () => { if (!p.parser.trim() || confirm('覆盖当前 Parser 内容？')) { p.parser = PARSER_EXAMPLE; markDirty(); render(); } } }, '填入示例'),
+      h('button', { class: 'sm', onclick: () => { if (!p.parser.trim() || confirm('覆盖当前内容？')) { p.parser = PARSER_EXAMPLE; markDirty(); render(); } } }, '填入示例'),
       h('span', { class: 'hint', style: 'margin:0' }, '执行失败的命令会在「预览」的警告里列出。')),
   ];
 }
@@ -716,26 +716,37 @@ function sourcesPage() {
 
 // ---------- 模板 ----------
 function templatesPage() {
+  const blank = kind => ({ id: newID(), kind, name: `新${KINDS[kind].label}模板`, groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '' });
+  const add = t => { cfg.templates.push(t); openItems.add(t); markDirty(); render(); };
   const section = kind => {
     const K = KINDS[kind], list = cfg.templates.filter(t => t.kind === kind);
     return [
-      h('div', { class: 'section-title' }, `${K.label} 模板`.replace(/([一-鿿]) 模板/, '$1模板')),
-      list.length === 0 ? empty(`还没有${K.label}模板`, `在订阅组的「${K.label}」页点「存为模板」。`)
-        : h('div', { class: 'list' }, list.map(t => item(t, {
-          name: t.name, chips: [K.summary(t)],
-          controls: h('button', { class: 'sm danger', onclick: () => { if (!confirm(`删除模板「${t.name}」？已套用过它的订阅组不受影响。`)) return; cfg.templates.splice(cfg.templates.indexOf(t), 1); markDirty(); render(); } }, '删除'),
-          body: nameEl => h('div', { class: 'grid' },
-            field('模板名称', t, 'name', { wide: true, onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
-            kind === 'parser' ? field('内容', t, 'parser', { type: 'textarea', rows: 12, wide: true }) : h('div', { class: 'wide' },
-              h('div', { class: 'sublabel' }, `包含的${kind === 'groups' ? '策略组' : '规则集'}。要修改内容：套用到某个订阅组，改好后用同一个名称「存为模板」覆盖。`),
-              h('div', { class: 'chips' }, (kind === 'groups' ? t.groups : t.ruleSets).map(x => h('span', { class: 'chip' }, x.name || '(未命名)'))))),
-        }))),
+      h('div', { class: 'section-head' }, h('div', { class: 'section-title' }, `${K.label}模板`.replace(/([a-z])模板/i, '$1 模板')),
+        h('button', { class: 'sm', onclick: () => add(blank(kind)) }, '+ 新建')),
+      list.length === 0 ? empty(`还没有${K.label}模板`, '点右上的「新建」从空白开始。')
+        : h('div', { class: 'list' }, list.map(t => {
+          return item(t, {
+            name: t.name, chips: [K.summary(t)],
+            controls: [
+              h('button', { class: 'sm', onclick: () => add({ ...clone(t), id: newID(), name: t.name + ' 副本' }) }, '复制'),
+              h('button', { class: 'sm danger', onclick: () => { if (!confirm(`删除模板「${t.name}」？已套用过它的订阅组不受影响。`)) return; cfg.templates.splice(cfg.templates.indexOf(t), 1); markDirty(); render(); } }, '删除'),
+            ],
+            body: nameEl => [
+              h('div', { class: 'grid', style: 'margin-bottom:14px' }, field('模板名称', t, 'name', { wide: true, onchange: v => { nameEl.textContent = v || '(未命名)'; } })),
+              kind === 'groups' ? groupsEditor(t, '从空白开始添加。') : kind === 'rules' ? rulesEditor(t) : [
+                field('', t, 'parser', { type: 'textarea', rows: 14, placeholder: PARSER_EXAMPLE }),
+                h('div', { class: 'gap' }),
+                h('button', { class: 'sm', onclick: () => { if (!t.parser.trim() || confirm('覆盖当前内容？')) { t.parser = PARSER_EXAMPLE; markDirty(); render(); } } }, '填入示例'),
+              ],
+            ],
+          });
+        })),
     ];
   };
   return [
     h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '模板'), saveControls())),
     h('div', { class: 'content' },
-      h('p', { class: 'hint' }, '模板是可以重复套用的策略组、规则和 Parser。套用是复制一份到订阅组里，之后修改模板不会影响已经套用过的订阅组。'),
+      h('p', { class: 'hint' }, '模板是可以重复套用的策略组、规则和 Parser，在这里新建和修改。套用是复制一份到订阅组里，之后修改模板不会影响已经套用过的订阅组。'),
       section('groups'), section('rules'), section('parser')),
   ];
 }
