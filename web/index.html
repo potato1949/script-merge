@@ -825,7 +825,7 @@ function settingsPage() {
     h('div', { class: 'content' },
       datalist('ua', UA_PRESETS),
       h('div', { class: 'card' }, h('h3', {}, '拉取与缓存'),
-        h('p', { class: 'hint' }, '缓存按「来源 + 实际链接 + 实际 UA」分别保存，引用同一个来源的订阅组共用：同一个 UA 在缓存时间内重复拉取不会再请求上游。上游拉取失败时，只会继续使用同一链接和 UA 上一次成功的结果。'),
+        h('p', { class: 'hint' }, '缓存按「来源 + 实际链接 + 实际 UA」分别保存，引用同一个来源的订阅组共用：同一个 UA 在缓存时间内重复拉取不会再请求上游。上游拉取失败时，只会继续使用同一链接和 UA 上一次成功的结果。服务器需要经代理才能访问上游时，用环境变量 HTTP_PROXY / HTTPS_PROXY 配置。'),
         h('div', { class: 'grid' },
           field('上游订阅缓存时间（分钟，0 为每次都拉取）', cfg, 'cacheMinutes', { type: 'number', min: 0 }),
           field('建议客户端更新间隔（小时）', cfg, 'updateInterval', { type: 'number', min: 1 }),

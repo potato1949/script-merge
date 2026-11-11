@@ -12,3 +12,9 @@ services:
       # 可选：通过环境变量固定管理密码（设置后网页端不可修改）。
       # 不设置则首次打开网页时设置密码。
       # ADMIN_PASSWORD: "change-me"
+      # 可选：服务器直连拉不到上游订阅时，让拉取走代理（支持 http:// 和 socks5://）。
+      # 订阅地址是 https:// 的走 HTTPS_PROXY，http:// 的走 HTTP_PROXY，一般两个都填。
+      # 注意容器里的 127.0.0.1 是容器自己，代理在宿主机上时填宿主机的局域网 IP。
+      # HTTP_PROXY: "http://192.168.1.2:7890"
+      # HTTPS_PROXY: "http://192.168.1.2:7890"
+      # NO_PROXY: "localhost,127.0.0.1"

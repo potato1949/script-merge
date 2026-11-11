@@ -16,6 +16,35 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// TestMain 在任何请求发出之前设置代理环境变量：http.ProxyFromEnvironment 只在第一次使用时读一次环境。
+// 其他测试的上游都在 127.0.0.1 上，标准库对回环地址从不走代理，所以不受影响。
+var proxyHits struct {
+	sync.Mutex
+	urls []string
+}
+
+func TestMain(m *testing.M) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyHits.Lock()
+		proxyHits.urls = append(proxyHits.urls, r.URL.String()+" "+r.UserAgent())
+		proxyHits.Unlock()
+		if r.URL.Host != "upstream.test" { // 经代理的请求带完整地址
+			http.Error(w, "unexpected host", http.StatusBadGateway)
+			return
+		}
+		if r.URL.Path == "/sub" {
+			fmt.Fprint(w, "proxies:\n  - {name: via-proxy, type: ss, server: a.com, port: 443}\n")
+		}
+	}))
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"} {
+		os.Unsetenv(k)
+	}
+	os.Setenv("HTTP_PROXY", proxy.URL)
+	code := m.Run()
+	proxy.Close()
+	os.Exit(code)
+}
+
 // setSubs 用 v4 的「订阅」写法给订阅组配置节点来源：每条订阅变成一个全局来源加一条引用。
 func setSubs(cfg *Config, p *Profile, subs ...Subscription) {
 	for _, s := range subs {
@@ -359,6 +388,41 @@ func TestUAPassthrough(t *testing.T) {
 	}
 	if st := res.Subs[2]; !strings.Contains(st.Error, "订阅链接") {
 		t.Errorf("没填链接的订阅应报错: %+v", st)
+	}
+}
+
+func TestFetchUsesProxy(t *testing.T) {
+	proxyHits.Lock()
+	proxyHits.urls = nil // -count=N 时每轮重新计
+	proxyHits.Unlock()
+	cfg := defaultConfig()
+	p := &cfg.Profiles[0]
+	setSubs(&cfg, p, Subscription{ID: "aaaaaaaaaaaaaaaa", Name: "经代理", Enabled: true,
+		URL: "http://upstream.test/sub", UnlockURL: "http://upstream.test/unlock"})
+	res, err := Build(cfg, *p, NewFetcher(t.TempDir()), "", false)
+	if err != nil || res.Total != 1 || res.Subs[0].Error != "" {
+		t.Fatalf("经代理拉取失败: err=%v res=%+v", err, res)
+	}
+	// 解锁请求和订阅请求都应到达 HTTP_PROXY 指向的代理（upstream.test 这个域名并不存在，直连必然失败）
+	proxyHits.Lock()
+	defer proxyHits.Unlock()
+	if want := []string{"http://upstream.test/unlock " + chromeUA, "http://upstream.test/sub " + defaultUA}; !reflect.DeepEqual(proxyHits.urls, want) {
+		t.Errorf("代理收到的请求 = %q", proxyHits.urls)
+	}
+}
+
+func TestProxySummary(t *testing.T) {
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"} {
+		t.Setenv(k, "")
+	}
+	if s := proxySummary(); !strings.Contains(s, "直连") {
+		t.Errorf("未设置代理: %s", s)
+	}
+	t.Setenv("HTTPS_PROXY", "socks5://user:secret@10.0.0.1:1080")
+	t.Setenv("NO_PROXY", "localhost,.lan")
+	s := proxySummary()
+	if strings.Contains(s, "secret") || !strings.Contains(s, "HTTPS_PROXY=socks5://user:xxxxx@10.0.0.1:1080") || !strings.Contains(s, "NO_PROXY=localhost,.lan") {
+		t.Errorf("代理说明不符: %s", s)
 	}
 }
 

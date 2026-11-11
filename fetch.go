@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,7 +170,39 @@ func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, f
 	return e, nil
 }
 
+// proxySummary 返回一行说明：上游拉取实际会用哪些代理环境变量（代理地址里的密码不打印）。
+func proxySummary() string {
+	redact := func(v string) string {
+		if u, err := url.Parse(v); err == nil && u.Host != "" {
+			return u.Redacted()
+		}
+		if i := strings.LastIndex(v, "@"); i >= 0 {
+			return "***@" + v[i+1:]
+		}
+		return v
+	}
+	var parts []string
+	proxied := false
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"} {
+		v := strings.TrimSpace(firstNonEmpty(os.Getenv(k), os.Getenv(strings.ToLower(k))))
+		if v == "" {
+			continue
+		}
+		if k != "NO_PROXY" {
+			proxied = true
+			v = redact(v)
+		}
+		parts = append(parts, k+"="+v)
+	}
+	if !proxied {
+		return "上游拉取：直连（未设置 HTTP_PROXY / HTTPS_PROXY）"
+	}
+	return "上游拉取走代理：" + strings.Join(parts, "，")
+}
+
 func fetchSubscription(url, ua, unlockURL, unlockUA string) ([]map[string]any, string, error) {
+	// 没有自定义 Transport，落在 http.DefaultTransport 上，它会读 HTTP_PROXY / HTTPS_PROXY / NO_PROXY。
+	// 以后换成自定义 Transport 时要带上 Proxy: http.ProxyFromEnvironment，否则代理失效（TestFetchUsesProxy 会发现）。
 	client := &http.Client{Timeout: 30 * time.Second}
 	get := func(u, ua, accept string) (*http.Response, error) {
 		req, err := http.NewRequest(http.MethodGet, u, nil)

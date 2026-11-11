@@ -57,6 +57,7 @@ func main() {
 	}
 	addr := ":" + env("PORT", "8080")
 	log.Printf("script-merge 已启动，监听 %s，数据目录 %s", addr, dataDir)
+	log.Print(proxySummary())
 	srv := &http.Server{Addr: addr, Handler: app.routes(), ReadHeaderTimeout: 10 * time.Second}
 	log.Fatal(srv.ListenAndServe())
 }
