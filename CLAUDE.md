@@ -62,10 +62,11 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 构建流程（`build.go` 的 `Build`）
 
-`GET /sub/{token}` 和 `GET /api/preview` 调同一个 `Build(cfg, profile, fetcher, clientUA, force)`：
+`GET /sub/{token}` 和 `POST /api/preview` 调同一个 `Build(cfg, profile, fetcher, clientUA, force)`：
 
 基础配置 → 并发处理本组引用的节点来源 → 过滤 / 加前缀 / 重名加序号 → 生成策略组 → 生成规则 → `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
 
+- **预览不保存**：`POST /api/preview` 的请求体带着前端当前的整份 `cfg`（可能还没保存）和订阅组下标，服务端先过 `validateConfig` 再 `Build`，不落盘。「先预览、满意再保存」是界面的基本流程，不要让预览依赖已保存的配置
 - `clientUA` 是来拉合并链接的客户端的 UA。`resolveUA` 用它决定每个来源本次拉上游用哪个 UA：来源的 `UAMode` 是透传就用 `clientUA`，否则用全局的固定 UA（`Config.UserAgent`，空则 `defaultUA`）。每个来源只有一个上游链接，也没有自己的 UA
 - 代理链只有一种做法：`SourceRef.Dialer` 给这条引用的节点写上 `dialer-proxy`。前置代理里含有这些节点本身会成环，`validateDialers` 只警告，不自动从策略组里排除（这是用户确认的取舍）
 - 上游内容只认 Clash YAML 或分享链接列表；输出始终是 Clash YAML，不随客户端变化。其他客户端格式的方向见 `docs/CLIENT-SUPPORT.md`（加输出侧的渲染器，不加输入解析器）
@@ -108,6 +109,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 - 规则仓库的管理在「规则仓库」页（`ruleSourcesPage` + `ruleNamesBox`）：改来源、拉取清单、点规则名置顶 / 取消置顶。规则清单在模块级变量 `ruleNames` 里，启动时和 `cfg` 一起加载，拉取不标记未保存
 - 来源的新建、修改、删除只在「节点来源」页（`sourcesPage` + `sourceFields`）。订阅组的订阅源标签页（`tabSubs`）只能选用已有来源、移除引用、改 `SourceRef` 上的字段，来源内容只读展示（这是用户明确要求的）
+- 订阅组的 ID 由前端 `newID()` 生成（和来源、模板一样），预览结果 `previews` 按它存；判断「还没保存过」看 `p.token` 是否为空
 - `field(label, obj, key, opts)`：绑定到 `obj[key]` 的控件，输入即写回并标记未保存；不属于配置的临时输入传 `local: true`
 - `item(obj, opts)`：可展开的行，展开状态按对象引用记在 `openItems`
 - **只有结构变化才调 `render()`**（增删、排序、切换类型）。普通文本输入不要重绘，否则输入框会失焦

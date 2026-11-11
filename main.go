@@ -82,7 +82,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("PUT /api/config", a.auth(a.handlePutConfig))
 	mux.HandleFunc("POST /api/password", a.auth(a.handlePassword))
 	mux.HandleFunc("POST /api/token", a.auth(a.handleResetToken))
-	mux.HandleFunc("GET /api/preview", a.auth(a.handlePreview))
+	mux.HandleFunc("POST /api/preview", a.auth(a.handlePreview))
 	mux.HandleFunc("GET /api/export", a.auth(a.handleExport))
 	mux.HandleFunc("POST /api/import", a.auth(a.handleImport))
 	mux.HandleFunc("GET /api/access", a.auth(a.handleGetAccess))
@@ -482,16 +482,30 @@ func clientUA(ua string) string {
 	return ua
 }
 
-// handlePreview 以 ?ua= 指定的 UA 模拟一次客户端拉取。
+// handlePreview 用请求里带来的配置（前端当前的、可能还没保存的那份）模拟一次客户端拉取，不保存任何东西。
+// 这样可以先看改动的效果再决定要不要保存；保存才会影响真实的订阅链接。
+// 配置先过一遍和保存时相同的校验，所以预览通过的内容保存时也不会被拒绝。
 func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	cfg := a.store.Config()
-	p := findProfile(cfg, func(p Profile) bool { return p.ID == q.Get("profile") })
-	if p == nil {
+	var req struct {
+		Config  Config `json:"config"`
+		Profile int    `json:"profile"` // 订阅组在 Config.Profiles 里的下标：新建的订阅组可能还没有可靠的 ID
+		UA      string `json:"ua"`
+		Refresh bool   `json:"refresh"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	cfg := req.Config
+	if err := validateConfig(&cfg, nil); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Profile < 0 || req.Profile >= len(cfg.Profiles) {
 		writeErr(w, http.StatusNotFound, "订阅组不存在")
 		return
 	}
-	res, err := Build(cfg, *p, a.fetcher, clientUA(q.Get("ua")), q.Get("refresh") == "1")
+	p := &cfg.Profiles[req.Profile]
+	res, err := Build(cfg, *p, a.fetcher, clientUA(req.UA), req.Refresh)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return

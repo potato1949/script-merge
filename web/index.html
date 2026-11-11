@@ -387,7 +387,7 @@ function normalize(c) {
   for (const t of [...c.profiles, ...c.templates]) { t.groups ||= []; t.ruleSets ||= []; t.rulesBefore ||= ''; t.rulesAfter ||= ''; t.parser ||= ''; }
   for (const s of c.sources) { s.kind ||= 'remote'; s.uaMode ||= 'fixed'; s.nodes ||= ''; s.url ||= ''; s.unlockUrl ||= ''; }
   const ids = new Set(c.sources.map(s => s.id));
-  for (const p of c.profiles) { p.applied ||= {}; p.sources = (p.sources || []).filter(r => ids.has(r.source)); for (const r of p.sources) r.dialer ||= ''; }
+  for (const p of c.profiles) { p.id ||= newID(); p.applied ||= {}; p.sources = (p.sources || []).filter(r => ids.has(r.source)); for (const r of p.sources) r.dialer ||= ''; }
   pi = Math.min(pi, c.profiles.length - 1);
   return c;
 }
@@ -589,7 +589,7 @@ function newGroupDialog() {
     field('策略组', draft, 'groups', { options: opts('groups'), local: true }),
     field('规则', draft, 'rules', { options: opts('rules'), local: true }),
   ], [{ label: '新建订阅组', primary: true, onclick: close => {
-    const p = { id: '', name: draft.name.trim() || '未命名', token: '', fileName: '', sources: [], groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '', applied: {} };
+    const p = { id: newID(), name: draft.name.trim() || '未命名', token: '', fileName: '', sources: [], groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '', applied: {} };
     for (const kind of ['groups', 'rules']) if (draft[kind] !== '') applyTemplate(p, kind, cfg.templates[+draft[kind]]);
     cfg.profiles.push(p); markDirty(); close(); tab = 'subs'; go('group', cfg.profiles.length - 1);
   } }]);
@@ -688,23 +688,25 @@ function tabPreview(p) {
   const preview = previews[p.id];
   const run = async refresh => {
     if (busy) return;
-    if ((dirty || !p.id) && !(await save())) return;
     busy = true; toast('正在生成…');
-    const id = cur().id;
+    const id = p.id;
     try {
-      previews[id] = await api('GET', `/api/preview?profile=${id}&ua=${encodeURIComponent(ui.previewUA)}${refresh ? '&refresh=1' : ''}`);
+      // 把页面上现在的配置整份带过去，服务端只用它生成，不保存
+      previews[id] = await api('POST', '/api/preview', { config: cfg, profile: cfg.profiles.indexOf(p), ua: ui.previewUA, refresh });
+      previews[id].draft = dirty;
       toast(`生成成功，共 ${previews[id].total} 个节点`);
     } catch (err) { toast('生成失败：' + err.message); }
     busy = false; render();
   };
   return [
     datalist('ua', UA_PRESETS),
-    h('p', { class: 'hint' }, '模拟下面这个 UA 的客户端来拉取本组的订阅链接，流程与真实拉取完全相同。预览前会先保存修改。换一个 UA 可以检查透传是否按预期生效。'),
+    h('p', { class: 'hint' }, '模拟下面这个 UA 的客户端来拉取本组的订阅链接，流程与真实拉取完全相同。预览用的是页面上现在的内容，包括还没保存的修改；预览不会保存，订阅链接输出的内容要等点了「保存修改」才变。换一个 UA 可以检查透传是否按预期生效。'),
     h('div', { class: 'row', style: 'margin-bottom:16px' },
       h('div', { style: 'flex:1 1 240px' }, field('', ui, 'previewUA', { list: 'ua', local: true, placeholder: '模拟的客户端 UA' })),
       h('button', { class: 'primary', onclick: () => run(false) }, '生成预览'),
       h('button', { onclick: () => run(true) }, '跳过缓存重新拉取')),
     !preview ? empty('还没有预览', '点「生成预览」查看这个订阅组最终输出的配置。') : [
+      preview.draft && dirty && h('div', { class: 'warnbox' }, '这份预览包含还没保存的修改。确认没问题后点右上角的「保存修改」，订阅链接才会输出同样的内容。'),
       preview.subs.length > 0 && h('div', { class: 'card' }, h('div', { class: 'tblwrap' }, h('table', {},
         h('tr', {}, ['节点来源', '结果', '使用的 UA', '使用的链接'].map(t => h('th', {}, t))),
         preview.subs.map(s => h('tr', {},
@@ -760,7 +762,7 @@ async function loadAccess(id) {
   if (page === 'group' && tab === 'more' && cur().id === id) render();
 }
 function accessCard(p) {
-  if (!p.id) return null; // 还没保存的订阅组没有链接，也就没有记录
+  if (!p.token) return null; // 还没保存的订阅组没有链接，也就没有记录
   if (!(p.id in accessLog)) loadAccess(p.id);
   const all = accessLog[p.id] || [], shown = ui.accessAll ? all : all.slice(0, 15);
   const week = Date.now() - 7 * 864e5, fresh = all.filter(r => r.newIp && new Date(r.time) > week).length;
@@ -800,7 +802,7 @@ function tabMore(p) {
       h('p', { class: 'hint' }, '复制会得到一个内容相同、链接不同的新订阅组，节点来源与原来的共用。导出的文件用来分享这套配置：不含订阅链接、解锁地址、手填的节点和令牌，在「全局设置」里导入。删除在保存修改后生效，它的订阅链接随之失效。'),
       h('div', { class: 'row' },
         h('button', { onclick: () => {
-          const c = clone(p); c.id = ''; c.token = ''; c.name = p.name + ' 副本';
+          const c = clone(p); c.id = newID(); c.token = ''; c.name = p.name + ' 副本';
           cfg.profiles.push(c); markDirty(); tab = 'subs'; go('group', cfg.profiles.length - 1);
         } }, '复制这个订阅组'),
         h('button', { onclick: () => download(() => '/api/export?profile=' + cur().id) }, '导出这个订阅组'),

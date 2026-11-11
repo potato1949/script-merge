@@ -43,7 +43,7 @@ func TestAccessLog(t *testing.T) {
 		t.Errorf("没有节点的订阅组: HTTP %d", w.Code)
 	}
 	do("GET", "/sub/no-such-token", "") // 令牌不对的请求不属于任何订阅组，不记录
-	do("GET", "/api/preview?profile="+p.ID, "")
+	do("POST", "/api/preview", `{"config":`+string(body)+`,"profile":0}`)
 
 	got := records(p.ID)
 	for i := range got {

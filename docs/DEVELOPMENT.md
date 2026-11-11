@@ -81,7 +81,7 @@ Config
 
 ## 构建流程
 
-订阅链接 `GET /sub/{token}`（按 token 找到订阅组）和预览 `GET /api/preview` 都调用同一个 `Build(cfg, profile, fetcher, clientUA, force)`。`clientUA` 是来拉合并链接的客户端的 UA（预览时由 `?ua=` 指定）：
+订阅链接 `GET /sub/{token}`（按 token 找到订阅组）和预览 `POST /api/preview` 都调用同一个 `Build(cfg, profile, fetcher, clientUA, force)`。区别在配置从哪来：订阅链接用已保存的配置；预览用请求体里带来的、前端当前的那份（可能还没保存），先过一遍 `validateConfig` 再构建，不落盘。这样改动可以先看效果再保存，保存才会影响客户端。`clientUA` 是来拉合并链接的客户端的 UA（预览时由请求体的 `ua` 指定）：
 
 ```
 基础配置 (cfg.BaseConfig) → root map
@@ -229,7 +229,7 @@ Config
 | `PUT /api/config` | 是 | 整体覆盖 `Config`（各订阅组的 `token` 会被忽略）；返回保存后的配置（含服务端分配的 ID 和令牌） |
 | `POST /api/password` | 是 | `{old, new}` |
 | `POST /api/token` | 是 | `{profile}`，重置该订阅组的令牌，返回新配置 |
-| `GET /api/preview?profile=<id>&ua=<UA>[&refresh=1]` | 是 | 模拟该 UA 的客户端拉取；返回 `{yaml, subs, warnings, total, userinfo}`，`subs` 里有每个来源实际使用的链接和 UA |
+| `POST /api/preview` | 是 | `{config, profile, ua, refresh}`：`config` 是前端当前的整份配置，`profile` 是订阅组在其中的下标。不保存。模拟该 UA 的客户端拉取；返回 `{yaml, subs, warnings, total, userinfo}`，`subs` 里有每个来源实际使用的链接和 UA |
 | `GET /api/export[?profile=<id>]` | 是 | 下载整份配置；带 `profile` 时下载该订阅组的分享文件 |
 | `POST /api/import` | 是 | 请求体是导出的文件内容；返回导入后的配置 |
 | `GET /api/access?profile=<id>` | 是 | `{records}`，该订阅组的访问记录，最新的在前 |
@@ -252,7 +252,7 @@ Config
 - **`item` 可以嵌套**（模板行里展开策略组行）。CSS 里和展开 / 停用状态有关的选择器要用子代选择器（`.item.open > .item-head …`），否则外层的状态会套到内层上
 - **`toolbar(hint, kind, p)`**：订阅组里「套用模板」按钮和差异提示。提示的刷新函数挂在模块级的 `liveHint` 上，`markDirty()` 时调用，`render()` 开头清掉
 - **`dialog(title, build, actions)`**：基于原生 `<dialog>` 的对话框，套用模板、添加节点来源、新建订阅组都用它
-- **`newID()`**：按服务端的格式生成 ID。新建来源和模板时用它，这样不用先保存就能被引用 / 套用；订阅组的 ID 仍然留空由服务端分配（它关系到令牌）
+- **`newID()`**：按服务端的格式生成 ID。新建来源和模板时用它，这样不用先保存就能被引用 / 套用；订阅组也一样（预览结果按订阅组 ID 存，没保存的组也要能预览）；令牌始终由服务端发，判断「还没保存过」看 `p.token`
 - **导出导入**：`download(path)` 用 `fetch` 取回再存成文件（不用直接跳转，以免触发「未保存」的离开提示）；`importFile()` 读文件后 POST 给 `/api/import`，整份配置导入前确认。访问记录按订阅组缓存在 `accessLog` 里，进入「本组设置」时加载
 - **何时调用 `render()`**：结构变化（增删、排序、切换类型导致表单项变化）才重绘；普通文本输入不重绘，否则会丢焦点
 - **`normalize(cfg)`**：从服务端拿到配置后补齐缺失字段。给数据模型加了数组、对象或字符串字段，在这里补默认值
@@ -355,6 +355,7 @@ go vet ./... && gofmt -l .
 - 在「模板」页编辑策略组模板时没有节点可参考（筛选正则写得对不对要套用到订阅组后预览才知道）；规则模板里的策略名是自由输入，不校验它和哪套策略组模板配套
 - 差异提示的摘要忽略空值，「把某个字段从空改成 0 / false」不算修改
 - 导入单个订阅组时带来的来源总是新建，不会和已有的相同来源合并
+- 预览未保存的新来源也会写上游缓存，之后没保存的话缓存文件留在磁盘上（同「清理失效缓存」）
 - 访问记录的 IP 依赖反向代理正确追加 `X-Forwarded-For`；前面有公网 CDN 时记到的是 CDN 地址
 - 代理只能通过环境变量配置，所有来源共用，改了要重启服务
 - 会话存内存，重启即失效；不支持多实例共享
