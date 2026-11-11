@@ -46,7 +46,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 `Config` 下有 `Profiles[]`（各自带 `Groups`、内嵌的 `Rules`、`Parser`，以及对节点来源的引用 `Sources []SourceRef`）、全局的节点来源 `Sources[]`、`Templates[]`、规则来源 `RuleSources[]`，以及全局的 `BaseConfig` / `CacheMinutes` / `UpdateInterval` / `UserAgent`（固定 UA）/ `UnlockUserAgent`（解锁 UA）。
 
-- **节点来源是全局对象，订阅组只存引用**：`Source` 放属于来源本身的内容（名称、`Kind`、链接、`UAMode`、解锁地址、手填节点），`SourceRef` 放「这个订阅组怎么用它」（启用、前缀、Include / Exclude）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次。给来源加字段时先想清楚它属于哪一边
+- **节点来源是全局对象，订阅组只存引用**：`Source` 放属于来源本身的内容（名称、`Kind`、链接、`UAMode`、解锁地址、手填节点），`SourceRef` 放「这个订阅组怎么用它」（启用、前缀、Include / Exclude、前置代理 `Dialer`）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次。给来源加字段时先想清楚它属于哪一边
 - `Source.Kind`：`remote`（远程订阅）或 `manual`（手填节点）；空值等同 `remote`
 - **模板是复制语义**：套用 = 把模板内容复制进订阅组，之后互不影响。服务端只存 `Templates`，套用完全是前端对 `cfg` 对象的操作，`Build` 不知道模板的存在。模板只在「模板」页新建和编辑
 - `Profile.Applied` 按模板类型记下最近一次套用的模板 ID 和当时的内容摘要（前端的 `digest` 计算），只用于界面上的「来自模板 X / 已修改 / 模板有更新」提示，不做任何自动同步
@@ -67,6 +67,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 基础配置 → 并发处理本组引用的节点来源 → 过滤 / 加前缀 / 重名加序号 → 生成策略组 → 生成规则 → `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
 
 - `clientUA` 是来拉合并链接的客户端的 UA。`resolveUA` 用它决定每个来源本次拉上游用哪个 UA：来源的 `UAMode` 是透传就用 `clientUA`，否则用全局的固定 UA（`Config.UserAgent`，空则 `defaultUA`）。每个来源只有一个上游链接，也没有自己的 UA
+- 代理链只有一种做法：`SourceRef.Dialer` 给这条引用的节点写上 `dialer-proxy`。前置代理里含有这些节点本身会成环，`validateDialers` 只警告，不自动从策略组里排除（这是用户确认的取舍）
 - 上游内容只认 Clash YAML 或分享链接列表；输出始终是 Clash YAML，不随客户端变化。其他客户端格式的方向见 `docs/CLIENT-SUPPORT.md`（加输出侧的渲染器，不加输入解析器）
 - 内存里的配置树统一用 `map[string]any` / `[]any`，不要放 `[]map[string]any` 或 `[]string`：Parser 的路径命令和 `toNode` 只认前者
 - 面向用户的正则一律走 `compileRegex` / `optRegex`（regexp2，支持前瞻断言，带匹配超时），不要用标准库 `regexp`

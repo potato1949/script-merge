@@ -41,6 +41,8 @@ type SourceRef struct {
 	Prefix  string `json:"prefix"`  // 节点名前缀
 	Include string `json:"include"` // 节点名包含正则
 	Exclude string `json:"exclude"` // 节点名排除正则
+	// Dialer 是前置代理（代理链）：非空时本引用的节点都写上 dialer-proxy，经由这个策略组或节点拨号
+	Dialer string `json:"dialer"`
 }
 
 // TemplateRef 记录订阅组某部分内容最近一次套用的模板，以及套用时的内容摘要（由前端计算）。

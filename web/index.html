@@ -387,7 +387,7 @@ function normalize(c) {
   for (const t of [...c.profiles, ...c.templates]) { t.groups ||= []; t.ruleSets ||= []; t.rulesBefore ||= ''; t.rulesAfter ||= ''; t.parser ||= ''; }
   for (const s of c.sources) { s.kind ||= 'remote'; s.uaMode ||= 'fixed'; s.nodes ||= ''; s.url ||= ''; s.unlockUrl ||= ''; }
   const ids = new Set(c.sources.map(s => s.id));
-  for (const p of c.profiles) { p.applied ||= {}; p.sources = (p.sources || []).filter(r => ids.has(r.source)); }
+  for (const p of c.profiles) { p.applied ||= {}; p.sources = (p.sources || []).filter(r => ids.has(r.source)); for (const r of p.sources) r.dialer ||= ''; }
   pi = Math.min(pi, c.profiles.length - 1);
   return c;
 }
@@ -491,9 +491,10 @@ function newSource(kind) {
 // 订阅组里只引用「节点来源」页的来源：这里只能选用、移除和设置本组的前缀 / 过滤，来源本身的内容只读，修改要到「节点来源」页
 const editSource = s => { if (s) openItems.add(s); go('sources'); };
 function tabSubs(p) {
-  const status = previews[p.id]?.subs || [];
-  const use = s => { const r = { source: s.id, enabled: true, prefix: '', include: '', exclude: '' }; p.sources.push(r); openItems.add(r); markDirty(); render(); };
+  const status = previews[p.id]?.subs || [], dialerList = nextId('dialers');
+  const use = s => { const r = { source: s.id, enabled: true, prefix: '', include: '', exclude: '', dialer: '' }; p.sources.push(r); openItems.add(r); markDirty(); render(); };
   return [
+    datalist(dialerList, p.groups.map(g => g.name).filter(Boolean)),
     p.sources.length === 0 ? empty('还没有节点来源', cfg.sources.length > 0 ? '从「节点来源」里选择要用的来源，它们会合并成这个订阅组的输出。' : '先到「节点来源」页添加订阅链接或手动节点，再回到这里选用。')
       : h('div', { class: 'list' }, p.sources.map((r, i) => {
         const s = srcOf(r.source), others = usersOf(s.id).filter(x => x !== p);
@@ -501,7 +502,7 @@ function tabSubs(p) {
         return item(r, {
           name: s.name, off: !r.enabled,
           lead: field('', r, 'enabled', { type: 'checkbox', aria: '启用', onchange: render }),
-          chips: [...sourceChips(s), others.length > 0 && `${others.length + 1} 个订阅组共用`],
+          chips: [...sourceChips(s), r.dialer && `经由 ${r.dialer}`, others.length > 0 && `${others.length + 1} 个订阅组共用`],
           status: st && (st.error ? h('span', { class: 'tag err', title: st.error }, (st.stale ? `失败，用缓存 ${st.used} 个：` : '失败：') + st.error)
             : h('span', { class: 'tag ok' }, `${st.used} / ${st.count} 个节点`)),
           controls: listButtons(p.sources, i),
@@ -512,14 +513,16 @@ function tabSubs(p) {
             h('div', { class: 'grid' },
               field('节点名前缀（可选）', r, 'prefix', { placeholder: '例：[机场A] ' }),
               field('只保留匹配的节点（正则，可选）', r, 'include', { placeholder: '例：香港|日本' }),
-              field('排除匹配的节点（正则，可选）', r, 'exclude', { placeholder: '例：过期|剩余|官网' })),
+              field('排除匹配的节点（正则，可选）', r, 'exclude', { placeholder: '例：过期|剩余|官网' }),
+              field('前置代理（代理链，可选）', r, 'dialer', { placeholder: '策略组名或节点名', list: dialerList })),
+            h('p', { class: 'hint' }, '填了前置代理，这里的节点都会先经过它再连出去（输出为 dialer-proxy，需要 mihomo 内核）。典型用法：自建的落地节点填一个只含机场节点的策略组。该策略组里不要包含这些落地节点本身。'),
           ],
         });
       })),
     h('div', { class: 'row' },
       cfg.sources.length > 0 && h('button', { onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源'),
       h('button', { onclick: () => editSource() }, cfg.sources.length > 0 ? '管理节点来源' : '到「节点来源」页添加')),
-    h('p', { class: 'hint', style: 'margin-top:16px' }, '这里只引用「节点来源」页里的来源：名称、链接、UA 模式等在那里新建和修改，改一次所有用到它的订阅组都生效；是否启用、前缀和过滤由各组自己设置。从这里移除只是不再使用，来源本身还在。「客户端」指用本组订阅链接来更新的软件。透传 UA 时，客户端用什么 UA 来拉取，就用什么 UA 去拉上游；客户端没带 UA 时用固定 UA。固定 UA 和缓存时间在「全局设置」里调整。'),
+    h('p', { class: 'hint', style: 'margin-top:16px' }, '这里只引用「节点来源」页里的来源：名称、链接、UA 模式等在那里新建和修改，改一次所有用到它的订阅组都生效；是否启用、前缀、过滤和前置代理由各组自己设置。从这里移除只是不再使用，来源本身还在。「客户端」指用本组订阅链接来更新的软件。透传 UA 时，客户端用什么 UA 来拉取，就用什么 UA 去拉上游；客户端没带 UA 时用固定 UA。固定 UA 和缓存时间在「全局设置」里调整。'),
   ];
 }
 // 来源内容的只读概述（订阅组里展示用）

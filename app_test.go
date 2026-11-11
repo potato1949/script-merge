@@ -645,3 +645,64 @@ func TestSeedTemplatesAreConsistent(t *testing.T) {
 		}
 	}
 }
+
+// 前置代理（代理链）：引用上填了 Dialer，这批节点都带上 dialer-proxy；目标不存在、或能绕回节点自己时给出警告。
+func TestDialerProxy(t *testing.T) {
+	cfg := defaultConfig()
+	p := &cfg.Profiles[0]
+	setSubs(&cfg, p,
+		Subscription{ID: "aaaaaaaaaaaaaaaa", Kind: "manual", Name: "机场", Enabled: true,
+			Nodes: "- {name: 香港 01, type: ss, server: a.com, port: 443, cipher: aes-128-gcm, password: x}"},
+		Subscription{ID: "bbbbbbbbbbbbbbbb", Kind: "manual", Name: "家宽", Enabled: true, Prefix: "家宽 ",
+			Nodes: "- {name: 落地, type: http, server: 9.9.9.9, port: 8080, dialer-proxy: 旧值}"},
+	)
+	p.Rules = Rules{RulesAfter: "MATCH,全部"}
+	p.Groups = []Group{
+		{Name: "跳板", Type: "select", Nodes: "filter", Filter: "香港"},
+		{Name: "全部", Type: "select", Extra: []string{"跳板"}, Nodes: "all"},
+	}
+	build := func(dialer string) (map[string]any, []string) {
+		t.Helper()
+		p.Sources[1].Dialer = dialer
+		res, err := Build(cfg, *p, NewFetcher(t.TempDir()), "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var root map[string]any
+		if err := yaml.Unmarshal(res.YAML, &root); err != nil {
+			t.Fatal(err)
+		}
+		nodes := map[string]any{}
+		for _, n := range root["proxies"].([]any) {
+			nodes[fmt.Sprint(n.(map[string]any)["name"])] = n.(map[string]any)["dialer-proxy"]
+		}
+		return nodes, res.Warnings
+	}
+
+	nodes, warns := build(" 跳板 ")
+	if nodes["家宽 落地"] != "跳板" || nodes["香港 01"] != nil {
+		t.Errorf("dialer-proxy 不符: %v", nodes)
+	}
+	if len(warns) != 0 {
+		t.Errorf("不该有警告: %v", warns)
+	}
+
+	// 不填：保留节点自带的值；目标不存在要警告
+	nodes, warns = build("")
+	if nodes["家宽 落地"] != "旧值" || len(warns) != 1 || !strings.Contains(warns[0], "「旧值」不存在") {
+		t.Errorf("自带的 dialer-proxy: %v, 警告: %v", nodes, warns)
+	}
+
+	// 「全部」里（直接或经由其他策略组）能选到落地节点自己 → 环
+	_, warns = build("全部")
+	if len(warns) != 1 || !strings.Contains(warns[0], "「家宽 落地」") || !strings.Contains(warns[0], "环") {
+		t.Errorf("应警告形成环: %v", warns)
+	}
+	// 直接填节点名可以；填自己是环
+	if _, warns = build("香港 01"); len(warns) != 0 {
+		t.Errorf("填节点名不该有警告: %v", warns)
+	}
+	if _, warns = build("家宽 落地"); len(warns) != 1 {
+		t.Errorf("填自己应警告: %v", warns)
+	}
+}

@@ -170,8 +170,11 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 	// 2. 汇总节点（重名节点自动加序号）
 	proxies := []any{}
 	seen := map[string]bool{}
-	add := func(p map[string]any, prefix string) {
+	add := func(p map[string]any, prefix, dialer string) {
 		p = deepCopy(p).(map[string]any)
+		if dialer != "" { // 前置代理：覆盖节点自带的 dialer-proxy
+			p["dialer-proxy"] = dialer
+		}
 		base := prefix + fmt.Sprint(p["name"])
 		name := base
 		for n := 2; seen[name]; n++ {
@@ -203,7 +206,7 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 			if (inc != nil && !reMatch(inc, name)) || (exc != nil && reMatch(exc, name)) {
 				continue
 			}
-			add(p, s.Prefix)
+			add(p, s.Prefix, strings.TrimSpace(s.Dialer))
 			res.Subs[i].Used++
 		}
 	}
@@ -319,7 +322,7 @@ func unescapeRunes(b []byte) []byte {
 
 var builtinPolicies = map[string]bool{"DIRECT": true, "REJECT": true, "REJECT-DROP": true, "PASS": true, "COMPATIBLE": true, "GLOBAL": true}
 
-// validate 检查策略组成员和规则引用的策略是否存在。
+// validate 检查策略组成员、规则引用的策略、节点的前置代理（dialer-proxy）是否存在，以及前置代理有没有绕回节点自己。
 func validate(root map[string]any) (warns []string) {
 	known := map[string]bool{}
 	for _, n := range namesOf(root["proxies"]) {
@@ -339,6 +342,7 @@ func validate(root map[string]any) (warns []string) {
 			}
 		}
 	}
+	warns = append(warns, validateDialers(root, known)...)
 	missing := map[string]bool{}
 	rules, _ := root["rules"].([]any)
 	for _, r := range rules {
@@ -358,6 +362,78 @@ func validate(root map[string]any) (warns []string) {
 			missing[policy] = true
 			warns = append(warns, fmt.Sprintf("规则引用了不存在的策略「%s」", policy))
 		}
+	}
+	return warns
+}
+
+// validateDialers 检查节点的前置代理：目标要存在，并且顺着「策略组 → 成员」「节点 → 它的前置代理」走不能回到节点自己，
+// 否则客户端选中那条路径时这个节点就连不上。只警告，不改动配置。
+func validateDialers(root map[string]any, known map[string]bool) (warns []string) {
+	next := map[string][]string{} // 名称 → 从它出发可能经过的下一跳
+	proxies, _ := root["proxies"].([]any)
+	for _, p := range proxies {
+		if pm, _ := p.(map[string]any); pm != nil {
+			if d, ok := pm["dialer-proxy"]; ok && fmt.Sprint(d) != "" {
+				next[fmt.Sprint(pm["name"])] = []string{fmt.Sprint(d)}
+			}
+		}
+	}
+	groups, _ := root["proxy-groups"].([]any)
+	for _, g := range groups {
+		if gm, _ := g.(map[string]any); gm != nil {
+			members, _ := gm["proxies"].([]any)
+			for _, m := range members {
+				next[fmt.Sprint(gm["name"])] = append(next[fmt.Sprint(gm["name"])], fmt.Sprint(m))
+			}
+		}
+	}
+	reaches := func(from, target string) bool {
+		seen := map[string]bool{}
+		stack := []string{from}
+		for len(stack) > 0 {
+			n := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if n == target {
+				return true
+			}
+			if seen[n] {
+				continue
+			}
+			seen[n] = true
+			stack = append(stack, next[n]...)
+		}
+		return false
+	}
+	missing := map[string]bool{}
+	var looped []string
+	loopedBy := map[string][]string{} // 前置代理 → 会绕回自己的节点
+	for _, name := range namesOf(proxies) {
+		ds := next[name]
+		if len(ds) == 0 {
+			continue
+		}
+		d := ds[0]
+		switch {
+		case !known[d]:
+			if !missing[d] {
+				missing[d] = true
+				warns = append(warns, fmt.Sprintf("前置代理「%s」不存在（要填策略组名或节点名）", d))
+			}
+		case reaches(d, name):
+			if loopedBy[d] == nil {
+				looped = append(looped, d)
+			}
+			loopedBy[d] = append(loopedBy[d], name)
+		}
+	}
+	for _, d := range looped {
+		names := loopedBy[d]
+		more := ""
+		if len(names) > 3 {
+			more = fmt.Sprintf(" 等 %d 个节点", len(names))
+			names = names[:3]
+		}
+		warns = append(warns, fmt.Sprintf("前置代理「%s」里能选到以它为前置的节点「%s」%s，选中时会形成环、连不上；请让它只包含用作跳板的节点", d, strings.Join(names, "」「"), more))
 	}
 	return warns
 }

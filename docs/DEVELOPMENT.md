@@ -43,7 +43,7 @@ Config
 │    └─ Kind = manual：Nodes（YAML 或分享链接文本）
 ├─ Profiles[]              订阅组
 │   ├─ ID / Name / Token / FileName
-│   ├─ Sources[]           对节点来源的引用（SourceRef）：Source（来源 ID）、Enabled、Prefix、Include、Exclude
+│   ├─ Sources[]           对节点来源的引用（SourceRef）：Source（来源 ID）、Enabled、Prefix、Include、Exclude、Dialer（前置代理）
 │   ├─ Groups[]            策略组
 │   ├─ Rules               RulesBefore / RuleSets[] / RulesAfter（内嵌结构体）
 │   ├─ Parser
@@ -52,7 +52,7 @@ Config
 └─ 全局：BaseConfig、CacheMinutes、UpdateInterval、UserAgent（固定 UA）、UnlockUserAgent（解锁 UA）
 ```
 
-**节点来源是全局对象，订阅组里只有引用。** 划分的原则：决定「从上游拿到什么」的属于来源本身（`Source`：链接、UA 模式、解锁地址、手填节点、名称）；决定「这个订阅组怎么用它」的属于引用（`SourceRef`：是否启用、前缀、Include / Exclude）。同一个机场被三个组用，链接只存一份，改一处即可；同一个来源也可以在一个组里引用多次（比如按不同的正则拆成两批、加不同前缀）。因为缓存键里只有来源 ID，引用同一个来源的订阅组共用缓存，不会重复拉上游。
+**节点来源是全局对象，订阅组里只有引用。** 划分的原则：决定「从上游拿到什么」的属于来源本身（`Source`：链接、UA 模式、解锁地址、手填节点、名称）；决定「这个订阅组怎么用它」的属于引用（`SourceRef`：是否启用、前缀、Include / Exclude、前置代理）。同一个机场被三个组用，链接只存一份，改一处即可；同一个来源也可以在一个组里引用多次（比如按不同的正则拆成两批、加不同前缀）。因为缓存键里只有来源 ID，引用同一个来源的订阅组共用缓存，不会重复拉上游。
 
 来源没有订阅组引用时仍然保留（在「节点来源」页显示「未被使用」），不会自动删除。`validateConfig` 会去掉指向不存在来源的引用。
 
@@ -88,15 +88,19 @@ Config
   1. 并发处理本组所有启用的来源引用（按引用的来源 ID 在 cfg.Sources 里找到来源）
        remote：resolveUA 决定 UA → Fetcher.Get → parseSubscription
        manual：parseCustomProxies 解析 Nodes
-  2. 汇总节点        按引用上的 Include/Exclude 过滤 → 加 Prefix → 重名加序号
+  2. 汇总节点        按引用上的 Include/Exclude 过滤 → 加 Prefix → 重名加序号 → 引用上有 Dialer 的写上 dialer-proxy
   3. 生成策略组      Extra（固定成员）在前，按 Nodes 模式追加节点
   4. 生成规则        RulesBefore → 每个 RuleSet 一条 RULE-SET → RulesAfter
   5. ApplyParser     本组 Parser 对 root 做最终修改
-  6. validate        检查引用了不存在的策略 / 成员，只产生警告
+  6. validate        检查引用了不存在的策略 / 成员 / 前置代理、前置代理成环，只产生警告
   7. toNode + 编码   输出键顺序稳定的 YAML
 ```
 
 手动节点在第 1 步就进入节点列表，所以会参与策略组筛选，Parser 也能引用它们。
+
+**前置代理（代理链）**：`SourceRef.Dialer` 非空时，这条引用下的节点都写上 `dialer-proxy`（mihomo 的字段，值是策略组名或节点名），表示这些节点经由它拨号，典型用法是「自建落地节点经由机场节点出去」。它属于引用而不是来源，所以同一个来源在不同订阅组可以用不同的前置，也不进缓存键；引用上填了就覆盖节点自带的 `dialer-proxy`，没填则保留自带的。没有做 `relay` 类型的策略组（mihomo 已弃用）。
+
+前置代理的成员里不能有以它为前置的节点，否则客户端选中那个成员时节点就绕回自己。`Build` **不会自动把这些节点从策略组里去掉**，只由 `validateDialers` 报警告：顺着「策略组 → 成员」「节点 → 它的 `dialer-proxy`」走，能回到节点自己就算成环。这个检查在 Parser 之后做，所以手填节点自带的、Parser 命令写上的 `dialer-proxy` 也会被检查。
 
 `BuildResult.Subs` 里每个启用的引用一条状态（`SubStatus`）：`Index` 是引用在订阅组 `Sources` 里的下标，`ID` 是来源 ID。同一个来源可能被引用多次，所以前端用「下标 + 来源 ID」对应到行上。
 
@@ -244,7 +248,7 @@ Config
 - **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页，每个对应一个 `tabXxx(p)` 函数，操作当前订阅组 `p`
 - **`field(label, obj, key, opts)`**：绑定到 `obj[key]` 的表单控件，输入时写回并标记「未保存」。不属于配置的临时输入（预览 UA、对话框草稿）传 `local: true`
 - **`item(obj, opts)`**：可展开的行（订阅源、策略组、模板都用它）。展开状态记在 `openItems`（WeakSet，按对象引用），所以重绘和排序后仍保持展开。`body(nameEl)` 只在展开时才构建；改名时直接更新 `nameEl` 而不重绘，避免输入框失焦
-- **编辑器与页面分离**：策略组编辑器 `groupsEditor(o)`、规则编辑器 `rulesEditor(o)` 接收任何带 `groups` / `ruleSets` 等字段的对象，订阅组的标签页（`tabGroups` / `tabRules`）和「模板」页共用它们。规则里「策略」输入框的候选由 `policyNames(o)` 给出：订阅组有策略组可列；规则模板没有，只列已经用到的策略，其余自由输入。来源的表单 `sourceFields(s)` 只在「节点来源」页使用：订阅组的订阅源标签页（`tabSubs`）只能选用已有来源、设置本组的启用 / 前缀 / 过滤，来源内容只读展示（`sourceSummary`），新建、修改、删除来源都要到「节点来源」页（`editSource` 跳转过去并展开）。写这类编辑器时不要用 `cur()`，同一页上可能同时展开好几个，`datalist` 的 id 用 `nextId()` 生成
+- **编辑器与页面分离**：策略组编辑器 `groupsEditor(o)`、规则编辑器 `rulesEditor(o)` 接收任何带 `groups` / `ruleSets` 等字段的对象，订阅组的标签页（`tabGroups` / `tabRules`）和「模板」页共用它们。规则里「策略」输入框的候选由 `policyNames(o)` 给出：订阅组有策略组可列；规则模板没有，只列已经用到的策略，其余自由输入。来源的表单 `sourceFields(s)` 只在「节点来源」页使用：订阅组的订阅源标签页（`tabSubs`）只能选用已有来源、设置本组的启用 / 前缀 / 过滤 / 前置代理，来源内容只读展示（`sourceSummary`），新建、修改、删除来源都要到「节点来源」页（`editSource` 跳转过去并展开）。写这类编辑器时不要用 `cur()`，同一页上可能同时展开好几个，`datalist` 的 id 用 `nextId()` 生成
 - **`item` 可以嵌套**（模板行里展开策略组行）。CSS 里和展开 / 停用状态有关的选择器要用子代选择器（`.item.open > .item-head …`），否则外层的状态会套到内层上
 - **`toolbar(hint, kind, p)`**：订阅组里「套用模板」按钮和差异提示。提示的刷新函数挂在模块级的 `liveHint` 上，`markDirty()` 时调用，`render()` 开头清掉
 - **`dialog(title, build, actions)`**：基于原生 `<dialog>` 的对话框，套用模板、添加节点来源、新建订阅组都用它
@@ -334,6 +338,7 @@ go vet ./... && gofmt -l .
 - `TestUAPassthrough`：断言上游实际收到的「路径 + UA」及次数，以及失败时不跨 UA 回退。改 `resolveUA` 或缓存逻辑后跑它
 - `TestBuildEndToEnd`：先解锁再拉取、解锁 UA（默认 Chrome UA，以及全局自定义后重新拉取）、过滤、手动节点、同一来源被引用两次（只拉一次上游）、停用的引用、重名处理、前瞻正则、Parser 引用手动节点、流量信息合并、输出可被重新解析、字符串类型不丢失、同一 UA 回退旧缓存
 - `TestMigrateLegacyConfig`：v1、v2、v3 旧文件的迁移结果，以及迁移是幂等的
+- `TestDialerProxy`：引用上的前置代理写成 `dialer-proxy`、不填时保留节点自带的值、目标不存在和成环的警告
 - `TestMigrateSharedSources`：v4 → v5，相同的来源合并、过滤和前缀留在引用上、迁移结果能通过校验
 - `TestValidateSourcesAndRefs`：来源 ID 的规范化、引用跟着改、悬空引用和失效的套用记录被去掉
 - `TestFetchUsesProxy` / `TestProxySummary`：订阅请求和解锁请求都经过 `HTTP_PROXY`；日志里的代理说明不泄露密码
