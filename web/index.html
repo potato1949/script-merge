@@ -227,6 +227,7 @@ const previews = {};           // 订阅组 ID → 最近一次预览结果
 const accessLog = {};          // 订阅组 ID → 访问记录（加载中为 null）
 let srcStatus = {};            // 节点来源 ID → 最近一次实际拉取上游的结果（服务端内存里的，不属于配置）
 let snapshots = null;          // 历史版本列表；null = 需要重新加载，undefined = 正在加载
+const groupNames = new WeakMap(); // 策略组对象 → 上次确认过的名称，改名时用来找出引用旧名称的地方
 const ui = { previewUA: UA_PRESETS[0], accessAll: false, ruleSrc: '', ruleFilter: {} }; // ruleSrc：规则编辑器里上次选的规则仓库；ruleFilter：来源 ID → 清单的筛选词
 let ruleNames = {};            // 规则仓库 ID → { names, updated }：手动拉取的规则清单，不属于配置
 let liveHint = null;           // 当前页面上「来自模板 X」提示的刷新函数，内容一改就调用
@@ -318,6 +319,7 @@ function copyText(text, done) {
 }
 
 // 绑定到 obj[key] 的表单控件。o.local：不属于配置的临时输入，不标记「未保存」
+// o.onchange 每输入一个字都会调用；o.oncommit 只在文本框改完离开时调用一次
 function field(label, obj, key, o = {}) {
   let input;
   const set = v => { obj[key] = v; if (!o.local) markDirty(); if (o.onchange) o.onchange(v); };
@@ -334,6 +336,7 @@ function field(label, obj, key, o = {}) {
     input.value = o.lines ? (obj[key] || []).join('\n') : (obj[key] ?? '');
   } else {
     input = h('input', { type: o.type || 'text', placeholder: o.placeholder, list: o.list, min: o.min, spellcheck: 'false',
+      onchange: e => { if (o.oncommit) o.oncommit(e.target.value); },
       oninput: e => set(o.type === 'number' ? (parseInt(e.target.value, 10) || 0) : e.target.value) });
     input.value = obj[key] ?? '';
   }
@@ -646,8 +649,38 @@ function groupSummary(g) {
   const nodes = g.nodes === 'all' ? '全部节点' : g.nodes === 'filter' ? '正则筛选节点' : '';
   return [nodes, fixed > 0 && `固定成员 ${fixed}`].filter(Boolean);
 }
+// 策略组改名后，把同一个对象（订阅组或模板）里按名字引用它的地方一起改掉：其他策略组的固定成员、规则集的策略、
+// 前置 / 后置规则里的策略、节点来源的前置代理。这些引用都是纯文本，不跟着改就会悄悄失效，只在预览的警告里才看得到。
+// Parser 是自由文本，不自动改，只提醒。
+function renameGroup(o, g, to) {
+  const from = (groupNames.get(g) || '').trim();
+  to = to.trim();
+  groupNames.set(g, to);
+  if (!from || !to || from === to) return;
+  // 新旧名字和别的策略组重名时，分不清那些引用指的是谁，不动
+  if (o.groups.some(x => x !== g && [from, to].includes(x.name.trim()))) return;
+  let n = 0, members = false;
+  for (const x of o.groups) x.extra = (x.extra || []).map(m => m === from ? (n++, members = true, to) : m);
+  for (const r of o.ruleSets || []) if (r.policy === from) { r.policy = to; n++; }
+  for (const k of ['rulesBefore', 'rulesAfter']) if (o[k]) o[k] = o[k].split('\n').map(line => {
+    if (line.trim().startsWith('#')) return line;
+    const parts = line.split(',');
+    let i = parts.length - 1; // 策略在最后一段，后面可能还跟着 no-resolve
+    if (i > 1 && /^(no-resolve|src)$/i.test(parts[i].trim())) i--;
+    if (i < 1 || parts[i].trim() !== from) return line;
+    parts[i] = parts[i].replace(from, () => to); n++;
+    return parts.join(',');
+  }).join('\n');
+  for (const r of o.sources || []) if ((r.dialer || '').trim() === from) { r.dialer = to; n++; }
+  const inParser = (o.parser || '').includes(from);
+  if (n > 0) markDirty();
+  if (n > 0) toast(`已把 ${n} 处对「${from}」的引用改成「${to}」` + (inParser ? '；Parser 里也出现了这个名字，需要手动检查' : ''));
+  else if (inParser) toast(`Parser 里出现了「${from}」，改名后需要手动检查`);
+  if (members) render(); // 别的策略组展开着的「固定成员」文本框要跟着刷新
+}
 // 策略组编辑器。o 是任何带 groups 字段的对象：订阅组或策略组模板
 function groupsEditor(o, emptyText) {
+  for (const g of o.groups) if (!groupNames.has(g)) groupNames.set(g, g.name);
   return [
     o.groups.length === 0 ? empty('还没有策略组', emptyText)
       : h('div', { class: 'list' }, o.groups.map((g, i) => item(g, {
@@ -655,7 +688,7 @@ function groupsEditor(o, emptyText) {
         chips: [GROUP_TYPES.find(t => t[0] === g.type)?.[1] || g.type, ...groupSummary(g)],
         controls: listButtons(o.groups, i),
         body: nameEl => h('div', { class: 'grid' },
-          field('名称', g, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
+          field('名称', g, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; }, oncommit: v => renameGroup(o, g, v) }),
           field('类型', g, 'type', { options: GROUP_TYPES, onchange: render }),
           field('包含节点', g, 'nodes', { options: NODE_MODES, onchange: render }),
           g.nodes === 'filter' && field('节点筛选正则', g, 'filter', { placeholder: '例：香港|HK|🇭🇰' }),
@@ -668,7 +701,7 @@ function groupsEditor(o, emptyText) {
 }
 function tabGroups(p) {
   return [
-    toolbar('策略组按列表顺序输出。「固定成员」可填其他策略组名、DIRECT、REJECT 或具体节点名，排在节点之前。', 'groups', p),
+    toolbar('策略组按列表顺序输出。「固定成员」可填其他策略组名、DIRECT、REJECT 或具体节点名，排在节点之前。策略组改名时，本组的规则、其他策略组的固定成员和前置代理里引用它的地方会一起改。', 'groups', p),
     groupsEditor(p, '套用一个模板，或从空白开始添加。'),
   ];
 }
