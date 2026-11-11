@@ -79,6 +79,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 - 失败时只回退到**同一个键**的旧缓存，不跨链接 / UA 回退（这是用户明确要求的行为）
 - 解锁地址是一次独立的普通 GET，UA 用全局的解锁 UA（`Config.UnlockUserAgent`，空则 `chromeUA`），不随订阅的 UA 模式变化，不与订阅请求共享 Cookie（同样是用户明确要求）
 - 来源 ID 用作缓存文件名，`validateConfig` 只接受 16 位十六进制的 ID（前端新建来源、模板时用 `newID()` 按同样格式生成，这样保存前就能被引用）
+- `Fetcher.state` 记下每个来源最近一次**实际请求上游**的结果（`SourceState`：时间、错误、上次成功的时间 / 节点数 / `Subscription-Userinfo`），`GET /api/source-status` 给界面显示。只在内存里，重启后从磁盘缓存恢复成功的部分
 - 代理只走环境变量：`fetchSubscription` 的 `http.Client` 没有自定义 `Transport`，落在 `http.DefaultTransport` 上。以后换自定义 `Transport` 要带上 `Proxy: http.ProxyFromEnvironment`（`TestFetchUsesProxy` 会检查）。标准库对回环地址从不走代理，且只在第一次请求时读一次环境变量，所以测试在 `TestMain` 里设置代理
 
 ### 配置保存与令牌（`main.go`）

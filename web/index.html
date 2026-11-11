@@ -225,6 +225,7 @@ let cfg = null, dirty = false, envPassword = false, busy = false;
 let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / rulesrc / templates / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
 const accessLog = {};          // 订阅组 ID → 访问记录（加载中为 null）
+let srcStatus = {};            // 节点来源 ID → 最近一次实际拉取上游的结果（服务端内存里的，不属于配置）
 const ui = { previewUA: UA_PRESETS[0], accessAll: false, ruleSrc: '', ruleFilter: {} }; // ruleSrc：规则编辑器里上次选的规则仓库；ruleFilter：来源 ID → 清单的筛选词
 let ruleNames = {};            // 规则仓库 ID → { names, updated }：手动拉取的规则清单，不属于配置
 let liveHint = null;           // 当前页面上「来自模板 X」提示的刷新函数，内容一改就调用
@@ -394,7 +395,7 @@ function normalize(c) {
 async function boot() {
   const st = await (await fetch('/api/status')).json();
   envPassword = st.envPassword;
-  if (st.authed) { [cfg, ruleNames] = await Promise.all([api('GET', '/api/config').then(normalize), api('GET', '/api/rule-names')]); dirty = false; render(); }
+  if (st.authed) { [cfg, ruleNames, srcStatus] = await Promise.all([api('GET', '/api/config').then(normalize), api('GET', '/api/rule-names'), api('GET', '/api/source-status')]); dirty = false; render(); }
   else renderAuth(!st.initialized);
 }
 function renderAuth(setup) {
@@ -488,6 +489,42 @@ function newSource(kind) {
   return s;
 }
 
+// ---------- 来源的拉取状态 ----------
+// srcStatus 里是服务端记下的、各来源最近一次实际请求上游的结果，不用生成预览也能看到上游是否正常
+const ago = t => { const m = Math.round((Date.now() - new Date(t)) / 6e4); return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.round(m / 60)} 小时前` : `${Math.round(m / 1440)} 天前`; };
+const fmtTime = t => new Date(t).toLocaleString('zh-CN', { hour12: false });
+function fmtBytes(n) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i === 0 || n >= 100 ? Math.round(n) : n.toFixed(1)) + ' ' + units[i];
+}
+// 上游的 Subscription-Userinfo（upload=…; download=…; total=…; expire=…）→ ['已用 a / b', 'yyyy/m/d 到期']
+function trafficOf(s) {
+  const st = srcStatus[s.id], v = {};
+  for (const part of (st?.userinfo || '').split(';')) { const [k, n] = part.split('='); if (n != null && n.trim() !== '' && isFinite(n)) v[k.trim()] = Number(n); }
+  return [
+    v.total > 0 && `已用 ${fmtBytes((v.upload || 0) + (v.download || 0))} / ${fmtBytes(v.total)}`,
+    v.expire > 0 && new Date(v.expire * 1000).toLocaleDateString('zh-CN') + (v.expire * 1000 < Date.now() ? ' 已到期' : ' 到期'),
+  ].filter(Boolean);
+}
+// 来源行上的状态标签
+function stateTag(s) {
+  const st = s.kind !== 'manual' && srcStatus[s.id];
+  if (!st) return null;
+  return st.error ? h('span', { class: 'tag err', title: st.error }, `拉取失败 · ${ago(st.time)}`)
+    : h('span', { class: 'tag ok', title: '最近一次请求上游的结果' }, `${st.count} 个节点 · ${ago(st.time)}`);
+}
+// 来源展开后的一句话说明
+function stateLine(s) {
+  if (s.kind === 'manual') return null;
+  const st = srcStatus[s.id];
+  const text = !st ? '还没有拉取过上游。生成一次预览，或者等客户端来更新订阅，这里就会显示结果。'
+    : st.error ? `最近一次拉取上游失败（${fmtTime(st.time)}）：${st.error}。` + (st.okTime ? `上一次成功是 ${fmtTime(st.okTime)}，拿到 ${st.count} 个节点；那份缓存还在的话，客户端拿到的是它。` : '还没有成功过。')
+    : [`最近一次拉取上游：${fmtTime(st.time)}，${st.count} 个节点`, ...trafficOf(s)].join('；') + '。';
+  return h('div', { class: 'sublabel' }, text);
+}
+
 // 订阅组里只引用「节点来源」页的来源：这里只能选用、移除和设置本组的前缀 / 过滤，来源本身的内容只读，修改要到「节点来源」页
 const editSource = s => { if (s) openItems.add(s); go('sources'); };
 function tabSubs(p) {
@@ -503,11 +540,13 @@ function tabSubs(p) {
           name: s.name, off: !r.enabled,
           lead: field('', r, 'enabled', { type: 'checkbox', aria: '启用', onchange: render }),
           chips: [...sourceChips(s), r.dialer && `经由 ${r.dialer}`, others.length > 0 && `${others.length + 1} 个订阅组共用`],
-          status: st && (st.error ? h('span', { class: 'tag err', title: st.error }, (st.stale ? `失败，用缓存 ${st.used} 个：` : '失败：') + st.error)
+          // 生成过预览就显示本组的结果（过滤后用了几个），否则显示来源最近一次拉取上游的结果
+          status: !st ? stateTag(s) : (st.error ? h('span', { class: 'tag err', title: st.error }, (st.stale ? `失败，用缓存 ${st.used} 个：` : '失败：') + st.error)
             : h('span', { class: 'tag ok' }, `${st.used} / ${st.count} 个节点`)),
           controls: listButtons(p.sources, i),
           body: () => [
             h('div', { class: 'sublabel' }, sourceSummary(s), others.length > 0 && ` 还被 ${quote(others)} 使用。`),
+            stateLine(s),
             h('div', { class: 'row', style: 'margin-bottom:4px' }, h('button', { class: 'sm', onclick: () => editSource(s) }, '到「节点来源」页修改')),
             h('div', { class: 'subhead' }, '在本组里', h('small', {}, '只影响这个订阅组')),
             h('div', { class: 'grid' },
@@ -696,6 +735,7 @@ function tabPreview(p) {
       previews[id].draft = dirty;
       toast(`生成成功，共 ${previews[id].total} 个节点`);
     } catch (err) { toast('生成失败：' + err.message); }
+    try { srcStatus = await api('GET', '/api/source-status'); } catch { /* 状态只是辅助信息 */ }
     busy = false; render();
   };
   return [
@@ -822,7 +862,8 @@ function sourcesPage() {
         : h('div', { class: 'list' }, cfg.sources.map(s => {
           const users = usersOf(s.id);
           return item(s, {
-            name: s.name, chips: [...sourceChips(s), users.length > 0 ? `${users.length} 个订阅组在用` : '未被使用'],
+            name: s.name, chips: [...sourceChips(s), users.length > 0 ? `${users.length} 个订阅组在用` : '未被使用', ...trafficOf(s)],
+            status: stateTag(s),
             controls: h('button', { class: 'sm danger', onclick: () => {
               if (!confirm(users.length > 0 ? `删除来源「${s.name}」？它会同时从 ${quote(users)} 里移除。` : `删除来源「${s.name}」？`)) return;
               cfg.sources.splice(cfg.sources.indexOf(s), 1);
@@ -831,6 +872,7 @@ function sourcesPage() {
             } }, '删除'),
             body: nameEl => [
               h('div', { class: 'sublabel' }, users.length > 0 ? `正在使用它的订阅组：${quote(users)}` : '还没有订阅组使用它。到订阅组的「订阅源」页点「添加节点来源」选用。'),
+              stateLine(s),
               h('div', { class: 'grid' }, sourceFields(s, v => { nameEl.textContent = v || '(未命名)'; })),
             ],
           });

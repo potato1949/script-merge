@@ -52,6 +52,16 @@ type SubStatus struct {
 	FetchedAt time.Time `json:"fetchedAt"`
 }
 
+// SourceState 是一个节点来源最近一次实际请求上游的结果（命中缓存的不算）。
+// 透传 UA 的来源每个 UA 各拉各的，这里只记最近的那一次。只在内存里：重启后从磁盘缓存恢复成功的那部分。
+type SourceState struct {
+	Time     time.Time `json:"time"`               // 最近一次请求上游的时间
+	Error    string    `json:"error,omitempty"`    // 最近一次请求失败的原因，成功则为空
+	OKTime   time.Time `json:"okTime,omitzero"`    // 最近一次成功的时间
+	Count    int       `json:"count"`              // 最近一次成功拿到的节点数
+	Userinfo string    `json:"userinfo,omitempty"` // 最近一次成功时上游的 Subscription-Userinfo（流量、到期时间）
+}
+
 type failure struct {
 	at  time.Time
 	err error
@@ -64,6 +74,7 @@ type Fetcher struct {
 	dir   string
 	cache map[string]*cacheEntry
 	fails map[string]failure
+	state map[string]SourceState // 来源 ID → 最近一次拉取的结果
 	locks map[string]*sync.Mutex // 每个缓存键一把锁，避免并发请求重复拉取上游
 }
 
@@ -71,6 +82,7 @@ func NewFetcher(dataDir string) *Fetcher {
 	f := &Fetcher{
 		dir:   filepath.Join(dataDir, "cache"),
 		cache: map[string]*cacheEntry{}, fails: map[string]failure{}, locks: map[string]*sync.Mutex{},
+		state: map[string]SourceState{},
 	}
 	_ = os.MkdirAll(f.dir, 0o755)
 	files, _ := filepath.Glob(filepath.Join(f.dir, "*.json"))
@@ -82,8 +94,22 @@ func NewFetcher(dataDir string) *Fetcher {
 			continue
 		}
 		f.cache[e.Key] = &e
+		if e.FetchedAt.After(f.state[e.SubID].OKTime) {
+			f.state[e.SubID] = SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo}
+		}
 	}
 	return f
+}
+
+// States 返回各来源最近一次拉取结果的副本。
+func (f *Fetcher) States() map[string]SourceState {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make(map[string]SourceState, len(f.state))
+	for id, s := range f.state {
+		out[id] = s
+	}
+	return out
 }
 
 // cacheKey 由所有影响拉取结果的输入算出。解锁 UA 只在有解锁地址时才起作用，所以也只在那时计入。
@@ -112,6 +138,7 @@ func (f *Fetcher) store(e *cacheEntry) {
 	defer f.mu.Unlock()
 	f.cache[e.Key] = e
 	delete(f.fails, e.Key)
+	f.state[e.SubID] = SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo}
 	if b, err := json.Marshal(e); err == nil {
 		_ = os.WriteFile(filepath.Join(f.dir, e.Key+".json"), b, 0o600)
 	}
@@ -162,6 +189,9 @@ func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, f
 	if err != nil {
 		f.mu.Lock()
 		f.fails[key] = failure{time.Now(), err}
+		st := f.state[sub.ID] // 保留上次成功的时间和节点数
+		st.Time, st.Error = time.Now(), err.Error()
+		f.state[sub.ID] = st
 		f.mu.Unlock()
 		return cached, err
 	}

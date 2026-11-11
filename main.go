@@ -83,6 +83,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/password", a.auth(a.handlePassword))
 	mux.HandleFunc("POST /api/token", a.auth(a.handleResetToken))
 	mux.HandleFunc("POST /api/preview", a.auth(a.handlePreview))
+	mux.HandleFunc("GET /api/source-status", a.auth(a.handleSourceStatus))
 	mux.HandleFunc("GET /api/export", a.auth(a.handleExport))
 	mux.HandleFunc("POST /api/import", a.auth(a.handleImport))
 	mux.HandleFunc("GET /api/access", a.auth(a.handleGetAccess))
@@ -514,6 +515,11 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 		"yaml": string(res.YAML), "subs": res.Subs, "warnings": res.Warnings,
 		"total": res.Total, "userinfo": res.Userinfo,
 	})
+}
+
+// handleSourceStatus 返回各节点来源最近一次实际拉取上游的结果（来源 ID → SourceState）。
+func (a *App) handleSourceStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.fetcher.States())
 }
 
 func (a *App) handleSub(w http.ResponseWriter, r *http.Request) {
