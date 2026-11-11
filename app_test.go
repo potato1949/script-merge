@@ -518,6 +518,7 @@ func TestMigrateSharedSources(t *testing.T) {
 
 func TestValidateSourcesAndRefs(t *testing.T) {
 	cfg := defaultConfig()
+	tplGroups := cfg.Templates[0].ID
 	cfg.Sources = []Source{
 		{ID: "aaaaaaaaaaaaaaaa", Name: "A", URL: "https://a.example/s", UAMode: "passthrough"},
 		{ID: "not-a-valid-id", Name: "B", Kind: "manual", Nodes: "- {name: x, type: http, server: 1.1.1.1, port: 80}", URL: "https://leftover.example"},
@@ -525,6 +526,11 @@ func TestValidateSourcesAndRefs(t *testing.T) {
 	}
 	p := &cfg.Profiles[0]
 	p.Sources = []SourceRef{{Source: "aaaaaaaaaaaaaaaa", Enabled: true}, {Source: "not-a-valid-id", Prefix: "[B] "}, {Source: "gone"}, {Source: ""}}
+	p.Applied = map[string]TemplateRef{
+		"groups": {ID: tplGroups, Hash: "abc"}, // 保留
+		"rules":  {ID: tplGroups, Hash: "abc"}, // 类型对不上
+		"parser": {ID: "0000000000000000", Hash: "abc"},
+	}
 	if err := validateConfig(&cfg, map[string]string{p.ID: "tok"}); err != nil {
 		t.Fatal(err)
 	}
@@ -537,8 +543,8 @@ func TestValidateSourcesAndRefs(t *testing.T) {
 	if want := []SourceRef{{Source: "aaaaaaaaaaaaaaaa", Enabled: true}, {Source: b.ID, Prefix: "[B] "}}; !reflect.DeepEqual(p.Sources, want) {
 		t.Errorf("引用 = %+v", p.Sources)
 	}
-	if p.Token != "tok" {
-		t.Errorf("令牌 = %q", p.Token)
+	if want := map[string]TemplateRef{"groups": {ID: tplGroups, Hash: "abc"}}; !reflect.DeepEqual(p.Applied, want) || p.Token != "tok" {
+		t.Errorf("套用记录 = %+v", p.Applied)
 	}
 
 	cfg.Sources[1].Nodes = "这不是节点"

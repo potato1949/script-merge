@@ -342,9 +342,28 @@ func validateConfig(c *Config, tokens map[string]string) error {
 	if c.Templates == nil {
 		c.Templates = []Template{}
 	}
+	templateKinds := map[string]string{} // 模板 ID → 类型
+	defer func() {
+		// 「最近套用的模板」只保留仍然存在且类型对得上的
+		for pi := range c.Profiles {
+			p := &c.Profiles[pi]
+			for kind, ref := range p.Applied {
+				if templateKinds[ref.ID] != kind || len(ref.Hash) > 64 {
+					delete(p.Applied, kind)
+				}
+			}
+			if len(p.Applied) == 0 {
+				p.Applied = nil
+			}
+		}
+	}()
 	for i := range c.Templates {
 		t := &c.Templates[i]
+		old := t.ID
 		fixID(&t.ID)
+		if t.ID == old {
+			templateKinds[t.ID] = t.Kind
+		}
 		switch t.Kind {
 		case "groups":
 			t.Rules, t.Parser = Rules{}, ""

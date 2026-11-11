@@ -43,6 +43,13 @@ type SourceRef struct {
 	Exclude string `json:"exclude"` // 节点名排除正则
 }
 
+// TemplateRef 记录订阅组某部分内容最近一次套用的模板，以及套用时的内容摘要（由前端计算）。
+// 只用于界面上的差异提示，Build 不使用它。
+type TemplateRef struct {
+	ID   string `json:"id"`
+	Hash string `json:"hash"`
+}
+
 // Subscription 是 v4 及以前的节点来源：来源本身和订阅组的使用设置混在一起，且各订阅组各存一份。
 // v5 起拆成 Source + SourceRef，这个类型只用于 migrate。
 type Subscription struct {
@@ -111,6 +118,8 @@ type Profile struct {
 	Groups   []Group     `json:"groups"`
 	Rules
 	Parser string `json:"parser"`
+	// Applied 按模板类型（groups / rules / parser）记录最近一次套用的模板
+	Applied map[string]TemplateRef `json:"applied,omitempty"`
 
 	LegacySubscriptions []Subscription `json:"subscriptions,omitempty"` // v5 起拆成全局的 Config.Sources + 本组的 Sources
 	LegacyCustomProxies string         `json:"customProxies,omitempty"` // v3 起并入节点来源（manual）

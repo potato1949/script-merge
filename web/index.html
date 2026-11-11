@@ -91,6 +91,10 @@ main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .section-head .section-title { margin: 0 auto 0 0; }
 .subhead { font-weight: 600; font-size: 13px; margin: 16px 0 8px; }
 .subhead small { font-weight: 400; color: var(--muted); margin-left: 8px; }
+/* 「来自模板 X」提示 */
+.tplnote { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); margin: -4px 0 14px; }
+.tplnote.attn { color: var(--warn); }
+.tplnote[hidden] { display: none; }
 
 /* 表单 */
 label.f { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); min-width: 0; }
@@ -231,6 +235,7 @@ let cfg = null, dirty = false, envPassword = false, busy = false;
 let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / templates / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
 const ui = { previewUA: UA_PRESETS[0] };
+let liveHint = null;           // 当前页面上「来自模板 X」提示的刷新函数，内容一改就调用
 let uid = 0;                   // 给 datalist 生成不重复的 id
 const nextId = prefix => prefix + (++uid);
 const openItems = new WeakSet(); // 当前展开的行
@@ -242,6 +247,45 @@ const srcOf = id => cfg.sources.find(s => s.id === id);
 const usersOf = id => cfg.profiles.filter(p => p.sources.some(r => r.source === id)); // 引用了某个来源的订阅组
 const quote = list => list.map(p => `「${p.name || '(未命名)'}」`).join('');
 
+// ---------- 模板与订阅组的差异 ----------
+// 内容摘要：键排序、去掉空值后再算，这样服务端补上的默认字段、键的顺序都不影响结果
+function canon(v) {
+  if (Array.isArray(v)) return v.map(canon);
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v).sort()) {
+      const x = canon(v[k]);
+      if (x == null || x === '' || x === false || x === 0 || (Array.isArray(x) && x.length === 0)) continue;
+      o[k] = x;
+    }
+    return o;
+  }
+  return v;
+}
+function digest(kind, obj) {
+  const str = JSON.stringify(canon(Object.fromEntries(KINDS[kind].fields.map(f => [f, obj[f]]))));
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57; // cyrb53：够用来判断「有没有变」，不需要密码学强度
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0');
+}
+// 套用 = 复制内容，并记下来自哪个模板、当时的内容摘要
+function applyTemplate(p, kind, t) {
+  for (const f of KINDS[kind].fields) p[f] = clone(t[f]);
+  p.applied[kind] = { id: t.id, hash: digest(kind, t) };
+}
+// 订阅组的某部分与它最近套用的模板的关系；没套用过或模板已删除时返回 null
+function templateState(p, kind) {
+  const ref = p.applied[kind], t = ref && cfg.templates.find(t => t.id === ref.id && t.kind === kind);
+  if (!t) return null;
+  const mine = digest(kind, p), theirs = digest(kind, t);
+  if (mine === theirs) return { t, modified: false, updated: false };
+  return { t, modified: mine !== ref.hash, updated: theirs !== ref.hash };
+}
 
 // ---------- 基础工具 ----------
 function h(tag, attrs, ...kids) {
@@ -269,6 +313,7 @@ async function api(method, path, body) {
 }
 function markDirty() {
   dirty = true;
+  if (liveHint) liveHint();
   const d = document.getElementById('dirty'), s = document.getElementById('save');
   if (d) d.hidden = false;
   if (s) s.disabled = false;
@@ -349,7 +394,7 @@ function normalize(c) {
   for (const t of [...c.profiles, ...c.templates]) { t.groups ||= []; t.ruleSets ||= []; t.rulesBefore ||= ''; t.rulesAfter ||= ''; t.parser ||= ''; }
   for (const s of c.sources) { s.kind ||= 'remote'; s.uaMode ||= 'fixed'; s.nodes ||= ''; s.url ||= ''; s.unlockUrl ||= ''; }
   const ids = new Set(c.sources.map(s => s.id));
-  for (const p of c.profiles) { p.sources = (p.sources || []).filter(r => ids.has(r.source)); }
+  for (const p of c.profiles) { p.applied ||= {}; p.sources = (p.sources || []).filter(r => ids.has(r.source)); }
   pi = Math.min(pi, c.profiles.length - 1);
   return c;
 }
@@ -402,6 +447,7 @@ function saveControls() {
   return [d, h('button', { id: 'save', class: 'primary', disabled: !dirty, onclick: save }, '保存修改')];
 }
 function render() {
+  liveHint = null;
   const body = page === 'group' ? groupPage() : page === 'sources' ? sourcesPage() : page === 'templates' ? templatesPage() : settingsPage();
   app.replaceChildren(h('div', { class: 'shell' }, rail(), h('main', {}, body)));
 }
@@ -500,10 +546,28 @@ function pickSourceDialog(p, use) {
   ], [{ label: '添加到本组', primary: true, onclick: close => { close(); use(picked); } }]);
 }
 
-// 「套用模板」工具栏
-function toolbar(hint, kind) {
-  return h('div', { class: 'toolbar' }, h('p', { class: 'hint' }, hint),
-    h('div', { class: 'row' }, h('button', { onclick: () => applyTemplateDialog(kind) }, '套用模板')));
+// 「套用模板」工具栏，以及「来自模板 X」的差异提示
+function toolbar(hint, kind, p) {
+  const note = h('div', { class: 'tplnote' });
+  const reapply = t => h('button', { class: 'sm', onclick: () => {
+    if (templateState(p, kind)?.modified && !confirm(`重新套用「${t.name}」会覆盖本组对${KINDS[kind].label}的修改，继续？`)) return;
+    applyTemplate(p, kind, t); markDirty(); render(); toast(`已重新套用「${t.name}」`);
+  } }, '重新套用');
+  liveHint = () => {
+    const st = templateState(p, kind);
+    note.hidden = !st;
+    if (!st) return;
+    const name = `「${st.t.name}」`;
+    note.className = 'tplnote' + (st.updated ? ' attn' : '');
+    const text = st.updated ? (st.modified ? `来自模板${name}，本组已修改；模板也有更新` : `模板${name}有更新，可重新套用`) : (st.modified ? `来自模板${name}，已修改` : `来自模板${name}`);
+    note.replaceChildren(...(st.updated ? [text, reapply(st.t)] : [text]));
+  };
+  liveHint();
+  return [
+    h('div', { class: 'toolbar' }, h('p', { class: 'hint' }, hint),
+      h('div', { class: 'row' }, h('button', { onclick: () => applyTemplateDialog(kind) }, '套用模板'))),
+    note,
+  ];
 }
 function applyTemplateDialog(kind) {
   const K = KINDS[kind], list = cfg.templates.filter(t => t.kind === kind);
@@ -515,7 +579,7 @@ function applyTemplateDialog(kind) {
     ? h('p', { class: 'hint' }, `还没有${K.label}模板。到左栏的「模板」页新建一个。`)
     : [h('p', { class: 'hint' }, `模板内容会复制到「${cur().name}」，替换它现在的${K.label}。之后再改，模板和订阅组互不影响。`), pickEl],
   list.length === 0 ? [] : [{ label: '套用并替换', primary: true, onclick: close => {
-    for (const f of K.fields) cur()[f] = clone(picked[f]);
+    applyTemplate(cur(), kind, picked);
     markDirty(); close(); render(); toast(`已套用「${picked.name}」`);
   } }]);
 }
@@ -529,8 +593,8 @@ function newGroupDialog() {
     field('策略组', draft, 'groups', { options: opts('groups'), local: true }),
     field('规则', draft, 'rules', { options: opts('rules'), local: true }),
   ], [{ label: '新建订阅组', primary: true, onclick: close => {
-    const p = { id: '', name: draft.name.trim() || '未命名', token: '', fileName: '', sources: [], groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '' };
-    for (const kind of ['groups', 'rules']) if (draft[kind] !== '') for (const f of KINDS[kind].fields) p[f] = clone(cfg.templates[+draft[kind]][f]);
+    const p = { id: '', name: draft.name.trim() || '未命名', token: '', fileName: '', sources: [], groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '', applied: {} };
+    for (const kind of ['groups', 'rules']) if (draft[kind] !== '') applyTemplate(p, kind, cfg.templates[+draft[kind]]);
     cfg.profiles.push(p); markDirty(); close(); tab = 'subs'; go('group', cfg.profiles.length - 1);
   } }]);
 }
@@ -562,7 +626,7 @@ function groupsEditor(o, emptyText) {
 }
 function tabGroups(p) {
   return [
-    toolbar('策略组按列表顺序输出。「固定成员」可填其他策略组名、DIRECT、REJECT 或具体节点名，排在节点之前。', 'groups'),
+    toolbar('策略组按列表顺序输出。「固定成员」可填其他策略组名、DIRECT、REJECT 或具体节点名，排在节点之前。', 'groups', p),
     groupsEditor(p, '套用一个模板，或从空白开始添加。'),
   ];
 }
@@ -608,14 +672,14 @@ function rulesEditor(o) {
 }
 function tabRules(p) {
   return [
-    toolbar('最终规则顺序：前置规则 → 规则集（按下表顺序）→ 后置规则。Clash 自上而下匹配，命中即止。', 'rules'),
+    toolbar('最终规则顺序：前置规则 → 规则集（按下表顺序）→ 后置规则。Clash 自上而下匹配，命中即止。', 'rules', p),
     rulesEditor(p),
   ];
 }
 
 function tabParser(p) {
   return [
-    toolbar('CFW Parsers 语法，在节点、策略组、规则都生成之后执行，可引用本组的全部节点（含手动节点）。支持 prepend-/append-/mix- 系列和 commands（= 覆盖、+ 插入、结尾 - 删除、(名称) 定位、[]proxyNames|正则）。', 'parser'),
+    toolbar('CFW Parsers 语法，在节点、策略组、规则都生成之后执行，可引用本组的全部节点（含手动节点）。支持 prepend-/append-/mix- 系列和 commands（= 覆盖、+ 插入、结尾 - 删除、(名称) 定位、[]proxyNames|正则）。', 'parser', p),
     field('', p, 'parser', { type: 'textarea', rows: 20, placeholder: PARSER_EXAMPLE }),
     h('div', { class: 'gap' }),
     h('div', { class: 'row' },
@@ -725,14 +789,16 @@ function templatesPage() {
         h('button', { class: 'sm', onclick: () => add(blank(kind)) }, '+ 新建')),
       list.length === 0 ? empty(`还没有${K.label}模板`, '点右上的「新建」从空白开始。')
         : h('div', { class: 'list' }, list.map(t => {
+          const users = cfg.profiles.filter(p => p.applied[kind]?.id === t.id);
           return item(t, {
-            name: t.name, chips: [K.summary(t)],
+            name: t.name, chips: [K.summary(t), users.length > 0 && `${users.length} 个订阅组套用过`],
             controls: [
               h('button', { class: 'sm', onclick: () => add({ ...clone(t), id: newID(), name: t.name + ' 副本' }) }, '复制'),
               h('button', { class: 'sm danger', onclick: () => { if (!confirm(`删除模板「${t.name}」？已套用过它的订阅组不受影响。`)) return; cfg.templates.splice(cfg.templates.indexOf(t), 1); markDirty(); render(); } }, '删除'),
             ],
             body: nameEl => [
               h('div', { class: 'grid', style: 'margin-bottom:14px' }, field('模板名称', t, 'name', { wide: true, onchange: v => { nameEl.textContent = v || '(未命名)'; } })),
+              users.length > 0 && h('div', { class: 'sublabel' }, `${quote(users)} 套用过这个模板。在这里修改不会改动它们，它们的${K.label}页会提示「模板有更新」，可以逐个重新套用。`),
               kind === 'groups' ? groupsEditor(t, '从空白开始添加。') : kind === 'rules' ? rulesEditor(t) : [
                 field('', t, 'parser', { type: 'textarea', rows: 14, placeholder: PARSER_EXAMPLE }),
                 h('div', { class: 'gap' }),
@@ -746,7 +812,7 @@ function templatesPage() {
   return [
     h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '模板'), saveControls())),
     h('div', { class: 'content' },
-      h('p', { class: 'hint' }, '模板是可以重复套用的策略组、规则和 Parser，在这里新建和修改。套用是复制一份到订阅组里，之后修改模板不会影响已经套用过的订阅组。'),
+      h('p', { class: 'hint' }, '模板是可以重复套用的策略组、规则和 Parser，在这里新建和修改。套用是复制一份到订阅组里：之后修改模板不会改动已经套用过的订阅组，只会在那些订阅组里提示模板有更新。'),
       section('groups'), section('rules'), section('parser')),
   ];
 }
