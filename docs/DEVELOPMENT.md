@@ -220,10 +220,10 @@ Config
 - **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页，每个对应一个 `tabXxx(p)` 函数，操作当前订阅组 `p`
 - **`field(label, obj, key, opts)`**：绑定到 `obj[key]` 的表单控件，输入时写回并标记「未保存」。不属于配置的临时输入（预览 UA、对话框草稿）传 `local: true`
 - **`item(obj, opts)`**：可展开的行（订阅源、策略组、模板都用它）。展开状态记在 `openItems`（WeakSet，按对象引用），所以重绘和排序后仍保持展开。`body(nameEl)` 只在展开时才构建；改名时直接更新 `nameEl` 而不重绘，避免输入框失焦
-- **编辑器与页面分离**：策略组编辑器 `groupsEditor(o)`、规则编辑器 `rulesEditor(o)` 接收任何带 `groups` / `ruleSets` 等字段的对象，订阅组的标签页（`tabGroups` / `tabRules`）和「模板」页共用它们。规则里「策略」输入框的候选由 `policyNames(o)` 给出：订阅组有策略组可列；规则模板没有，只列已经用到的策略，其余自由输入。来源的表单 `sourceFields(s)` 同样被订阅源标签页和「节点来源」页共用。写这类编辑器时不要用 `cur()`，同一页上可能同时展开好几个，`datalist` 的 id 用 `nextId()` 生成
+- **编辑器与页面分离**：策略组编辑器 `groupsEditor(o)`、规则编辑器 `rulesEditor(o)` 接收任何带 `groups` / `ruleSets` 等字段的对象，订阅组的标签页（`tabGroups` / `tabRules`）和「模板」页共用它们。规则里「策略」输入框的候选由 `policyNames(o)` 给出：订阅组有策略组可列；规则模板没有，只列已经用到的策略，其余自由输入。来源的表单 `sourceFields(s)` 只在「节点来源」页使用：订阅组的订阅源标签页（`tabSubs`）只能选用已有来源、设置本组的启用 / 前缀 / 过滤，来源内容只读展示（`sourceSummary`），新建、修改、删除来源都要到「节点来源」页（`editSource` 跳转过去并展开）。写这类编辑器时不要用 `cur()`，同一页上可能同时展开好几个，`datalist` 的 id 用 `nextId()` 生成
 - **`item` 可以嵌套**（模板行里展开策略组行）。CSS 里和展开 / 停用状态有关的选择器要用子代选择器（`.item.open > .item-head …`），否则外层的状态会套到内层上
 - **`toolbar(hint, kind, p)`**：订阅组里「套用模板」按钮和差异提示。提示的刷新函数挂在模块级的 `liveHint` 上，`markDirty()` 时调用，`render()` 开头清掉
-- **`dialog(title, build, actions)`**：基于原生 `<dialog>` 的对话框，套用模板、使用已有来源、新建订阅组都用它
+- **`dialog(title, build, actions)`**：基于原生 `<dialog>` 的对话框，套用模板、添加节点来源、新建订阅组都用它
 - **`newID()`**：按服务端的格式生成 ID。新建来源和模板时用它，这样不用先保存就能被引用 / 套用；订阅组的 ID 仍然留空由服务端分配（它关系到令牌）
 - **导出导入**：`download(path)` 用 `fetch` 取回再存成文件（不用直接跳转，以免触发「未保存」的离开提示）；`importFile()` 读文件后 POST 给 `/api/import`，整份配置导入前确认。访问记录按订阅组缓存在 `accessLog` 里，进入「本组设置」时加载
 - **何时调用 `render()`**：结构变化（增删、排序、切换类型导致表单项变化）才重绘；普通文本输入不重绘，否则会丢焦点
@@ -285,7 +285,7 @@ Config
 
 **支持新的订阅格式**（如 sing-box JSON）：在 `fetch.go` 的 `parseSubscription` 里加一个分支，产出 `[]map[string]any`（Clash 节点格式）即可，下游不用动。
 
-**加一种节点来源**（比如本地文件）：`Source.Kind` 加新值，`Build` 第 1 步的 goroutine 里加分支产出 `cacheEntry{Proxies: ...}`，`validateConfig` 里做对应校验，前端 `sourceFields` 加表单，`tabSubs` 和 `sourcesPage` 加「添加」按钮；`exportProfile` 里把新类型里能拿到节点的字段也去掉。
+**加一种节点来源**（比如本地文件）：`Source.Kind` 加新值，`Build` 第 1 步的 goroutine 里加分支产出 `cacheEntry{Proxies: ...}`，`validateConfig` 里做对应校验，前端 `sourceFields` 加表单，`sourcesPage` 加「添加」按钮，`sourceSummary` 加只读概述；`exportProfile` 里把新类型里能拿到节点的字段也去掉。
 
 **解锁步骤要更复杂**（POST、自定义 Header、多步）：改 `fetchSubscription`。给 `Source` 加影响拉取结果的字段后，记得把它加进 `cacheKey`，否则改了配置缓存不会失效。
 

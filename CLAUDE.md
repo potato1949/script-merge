@@ -97,6 +97,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 - 策略组编辑器 `groupsEditor(o)` 和规则编辑器 `rulesEditor(o)` 接收任何带对应字段的对象，订阅组和模板共用；不要在里面用 `cur()`
 
+- 来源的新建、修改、删除只在「节点来源」页（`sourcesPage` + `sourceFields`）。订阅组的订阅源标签页（`tabSubs`）只能选用已有来源、移除引用、改 `SourceRef` 上的字段，来源内容只读展示（这是用户明确要求的）
 - `field(label, obj, key, opts)`：绑定到 `obj[key]` 的控件，输入即写回并标记未保存；不属于配置的临时输入传 `local: true`
 - `item(obj, opts)`：可展开的行，展开状态按对象引用记在 `openItems`
 - **只有结构变化才调 `render()`**（增删、排序、切换类型）。普通文本输入不要重绘，否则输入框会失焦
