@@ -15,9 +15,36 @@ import (
 )
 
 // configVersion 是当前配置结构的版本，见 Config.migrate。
-const configVersion = 4
+const configVersion = 5
 
-// Subscription 是订阅组里的一个节点来源：远程订阅（remote）或手动填写的节点（manual）。
+// Source 是一个全局的节点来源：远程订阅（remote）或手动填写的节点（manual）。
+// 多个订阅组可以引用同一个来源（SourceRef），这里只放属于来源本身的内容。
+type Source struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"` // remote / manual；空等同于 remote
+	Name string `json:"name"`
+
+	// 仅 manual：Clash YAML 数组或每行一条分享链接
+	Nodes string `json:"nodes"`
+
+	// 仅 remote
+	URL       string `json:"url"`
+	UAMode    string `json:"uaMode"`    // fixed：用全局的 Config.UserAgent；passthrough：透传拉取合并链接的客户端 UA
+	UnlockURL string `json:"unlockUrl"` // 拉取订阅前先访问一次的地址
+}
+
+// SourceRef 是订阅组对一个节点来源的引用，带「本组怎么用它」的设置。
+// 同一个来源可以在一个订阅组里被引用多次（比如用不同的过滤条件）。
+type SourceRef struct {
+	Source  string `json:"source"` // Source.ID
+	Enabled bool   `json:"enabled"`
+	Prefix  string `json:"prefix"`  // 节点名前缀
+	Include string `json:"include"` // 节点名包含正则
+	Exclude string `json:"exclude"` // 节点名排除正则
+}
+
+// Subscription 是 v4 及以前的节点来源：来源本身和订阅组的使用设置混在一起，且各订阅组各存一份。
+// v5 起拆成 Source + SourceRef，这个类型只用于 migrate。
 type Subscription struct {
 	ID      string `json:"id"`
 	Kind    string `json:"kind"` // remote / manual；空等同于 remote
@@ -74,18 +101,19 @@ type Rules struct {
 	RulesAfter  string    `json:"rulesAfter"`
 }
 
-// Profile 是一个订阅组：节点来源 + 策略组 + 规则 + Parser，对应一个输出链接。
+// Profile 是一个订阅组：引用的节点来源 + 策略组 + 规则 + Parser，对应一个输出链接。
 type Profile struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Token         string         `json:"token"`
-	FileName      string         `json:"fileName"`
-	Subscriptions []Subscription `json:"subscriptions"`
-	Groups        []Group        `json:"groups"`
+	ID       string      `json:"id"`
+	Name     string      `json:"name"`
+	Token    string      `json:"token"`
+	FileName string      `json:"fileName"`
+	Sources  []SourceRef `json:"sources"`
+	Groups   []Group     `json:"groups"`
 	Rules
 	Parser string `json:"parser"`
 
-	LegacyCustomProxies string `json:"customProxies,omitempty"` // v3 起并入 Subscriptions（manual）
+	LegacySubscriptions []Subscription `json:"subscriptions,omitempty"` // v5 起拆成全局的 Config.Sources + 本组的 Sources
+	LegacyCustomProxies string         `json:"customProxies,omitempty"` // v3 起并入节点来源（manual）
 }
 
 // Template 是可套用到订阅组的模板。套用是复制：之后模板和订阅组各改各的，互不影响，
@@ -102,6 +130,7 @@ type Template struct {
 type Config struct {
 	Version        int        `json:"version"`
 	Profiles       []Profile  `json:"profiles"`
+	Sources        []Source   `json:"sources"` // 节点来源，被各订阅组引用
 	Templates      []Template `json:"templates"`
 	CacheMinutes   int        `json:"cacheMinutes"`
 	UpdateInterval int        `json:"updateInterval"` // 小时，写入 profile-update-interval
@@ -129,16 +158,26 @@ type Config struct {
 //	v2：有 Profiles，但策略组 / 规则 / 通用 Parser 仍在顶层、各组共用
 //	v3：策略组、规则、Parser 都在订阅组内；自定义节点并入订阅源；新增模板
 //	v4：移除按客户端 UA 切换上游链接的「专用链接」，每个订阅只有一个链接；固定 UA 从各订阅挪到全局
+//	v5：节点来源从各订阅组里提出来成为全局对象，订阅组只保留引用和本组的过滤设置
 func (c *Config) migrate() bool {
-	if c.Version >= configVersion {
+	from := c.Version
+	if from >= configVersion {
 		return false
 	}
-	if c.Version < 3 {
+	if from < 3 {
 		c.migrateToV3()
 	}
-	// v3 → v4
+	if from < 4 {
+		c.migrateToV4()
+	}
+	c.migrateToV5()
+	c.Version = configVersion
+	return true
+}
+
+func (c *Config) migrateToV4() {
 	for i := range c.Profiles {
-		subs := c.Profiles[i].Subscriptions
+		subs := c.Profiles[i].LegacySubscriptions
 		for j := range subs {
 			s := &subs[j]
 			// 默认链接为空的订阅改用第一条有链接的专用链接，免得迁移后无链接可拉
@@ -159,15 +198,69 @@ func (c *Config) migrate() bool {
 	if c.UserAgent == defaultUA { // 和内置默认值相同就留空，以后默认值更新时跟着变
 		c.UserAgent = ""
 	}
-	c.Version = configVersion
-	return true
+}
+
+const hexDigits = "0123456789abcdef"
+
+// validID 判断是否是服务端生成的那种 ID（16 位十六进制）。
+func validID(id string) bool { return len(id) == 16 && strings.Trim(id, hexDigits) == "" }
+
+// splitSubscription 把旧的订阅拆成「来源本身」和「订阅组怎么用它」两部分。
+func splitSubscription(s Subscription) (Source, SourceRef) {
+	src := Source{ID: s.ID, Kind: "remote", Name: s.Name}
+	if s.Kind == "manual" {
+		src.Kind, src.Nodes = "manual", s.Nodes
+	} else {
+		src.URL, src.UnlockURL, src.UAMode = strings.TrimSpace(s.URL), strings.TrimSpace(s.UnlockURL), "fixed"
+		if s.UAMode == "passthrough" {
+			src.UAMode = "passthrough"
+		}
+	}
+	return src, SourceRef{Source: s.ID, Enabled: s.Enabled, Prefix: s.Prefix, Include: s.Include, Exclude: s.Exclude}
+}
+
+// migrateToV5 把各订阅组里的订阅提成全局的节点来源。内容完全相同的（远程：链接 + UA 模式 + 解锁地址；
+// 手动：节点文本）合并成一个，名称和 ID 取第一次出现的；没填链接 / 节点的不合并。
+func (c *Config) migrateToV5() {
+	c.Sources = []Source{}
+	same := map[string]string{} // 内容 → 来源 ID
+	ids := map[string]bool{}
+	for i := range c.Profiles {
+		p := &c.Profiles[i]
+		p.Sources = []SourceRef{}
+		for _, s := range p.LegacySubscriptions {
+			src, ref := splitSubscription(s)
+			key := ""
+			switch {
+			case src.Kind == "manual" && strings.TrimSpace(src.Nodes) != "":
+				key = "manual\n" + src.Nodes
+			case src.Kind == "remote" && src.URL != "":
+				key = "remote\n" + src.URL + "\n" + src.UAMode + "\n" + src.UnlockURL
+			}
+			if id, ok := same[key]; ok && key != "" {
+				ref.Source = id
+			} else {
+				if !validID(src.ID) || ids[src.ID] {
+					src.ID = randHex(8)
+				}
+				ids[src.ID] = true
+				c.Sources = append(c.Sources, src)
+				if key != "" {
+					same[key] = src.ID
+				}
+				ref.Source = src.ID
+			}
+			p.Sources = append(p.Sources, ref)
+		}
+		p.LegacySubscriptions = nil
+	}
 }
 
 func (c *Config) migrateToV3() {
 	if len(c.Profiles) == 0 { // v1 → v2
 		c.Profiles = []Profile{{
 			ID: randHex(8), Name: "默认", Token: firstNonEmpty(c.LegacyToken, randHex(16)),
-			FileName: firstNonEmpty(c.LegacyFileName, "merged"), Subscriptions: c.LegacySubscriptions,
+			FileName: firstNonEmpty(c.LegacyFileName, "merged"), LegacySubscriptions: c.LegacySubscriptions,
 			LegacyCustomProxies: c.LegacyCustomProxies,
 		}}
 	}
@@ -183,7 +276,7 @@ func (c *Config) migrateToV3() {
 			p.Parser = c.LegacyParser
 		}
 		if p.LegacyCustomProxies != "" {
-			p.Subscriptions = append(p.Subscriptions, Subscription{
+			p.LegacySubscriptions = append(p.LegacySubscriptions, Subscription{
 				ID: randHex(8), Kind: "manual", Name: "手动节点", Enabled: true, Nodes: p.LegacyCustomProxies,
 			})
 			p.LegacyCustomProxies = ""
@@ -441,8 +534,9 @@ func defaultConfig() Config {
 		Version: configVersion,
 		Profiles: []Profile{{
 			ID: randHex(8), Name: "默认", Token: randHex(16), FileName: "merged",
-			Subscriptions: []Subscription{}, Groups: basicGroups(), Rules: basicRules(),
+			Sources: []SourceRef{}, Groups: basicGroups(), Rules: basicRules(),
 		}},
+		Sources:        []Source{},
 		Templates:      seedTemplates(),
 		CacheMinutes:   5,
 		UpdateInterval: 12,

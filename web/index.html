@@ -87,6 +87,8 @@ main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .empty { border: 1px dashed var(--line-strong); border-radius: 12px; padding: 28px 20px; text-align: center; color: var(--muted); margin-bottom: 14px; }
 .empty b { display: block; color: var(--text); font: 600 16px/1.4 var(--serif); margin-bottom: 4px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.subhead { font-weight: 600; font-size: 13px; margin: 16px 0 8px; }
+.subhead small { font-weight: 400; color: var(--muted); margin-left: 8px; }
 
 /* 表单 */
 label.f { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); min-width: 0; }
@@ -224,12 +226,18 @@ const KINDS = {
 // ---------- 状态 ----------
 const app = document.getElementById('app');
 let cfg = null, dirty = false, envPassword = false, busy = false;
-let page = 'group', pi = 0, tab = 'subs'; // page: group / templates / settings
+let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / templates / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
 const ui = { previewUA: UA_PRESETS[0] };
 const openItems = new WeakSet(); // 当前展开的行
 const cur = () => cfg.profiles[pi];
 const clone = v => JSON.parse(JSON.stringify(v));
+// 和服务端生成的 ID 同一种格式（16 位十六进制），这样新建的来源在保存前就能被引用
+const newID = () => [...crypto.getRandomValues(new Uint8Array(8))].map(b => b.toString(16).padStart(2, '0')).join('');
+const srcOf = id => cfg.sources.find(s => s.id === id);
+const usersOf = id => cfg.profiles.filter(p => p.sources.some(r => r.source === id)); // 引用了某个来源的订阅组
+const quote = list => list.map(p => `「${p.name || '(未命名)'}」`).join('');
+
 
 // ---------- 基础工具 ----------
 function h(tag, attrs, ...kids) {
@@ -289,12 +297,12 @@ function field(label, obj, key, o = {}) {
   if (!label) return input;
   return h('label', { class: 'f' + (o.wide ? ' wide' : '') }, label, input);
 }
-function listButtons(list, i) {
+function listButtons(list, i, remove) {
   const move = d => { const j = i + d; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; markDirty(); render(); };
   return [
     h('button', { class: 'sm', title: '上移', 'aria-label': '上移', onclick: () => move(-1), disabled: i === 0 }, '↑'),
     h('button', { class: 'sm', title: '下移', 'aria-label': '下移', onclick: () => move(1), disabled: i === list.length - 1 }, '↓'),
-    h('button', { class: 'sm danger', onclick: () => { list.splice(i, 1); markDirty(); render(); } }, '删除'),
+    h('button', { class: 'sm danger', onclick: remove || (() => { list.splice(i, 1); markDirty(); render(); }) }, '删除'),
   ];
 }
 const datalist = (id, values) => h('datalist', { id }, values.map(v => h('option', { value: v })));
@@ -332,9 +340,11 @@ function dialog(title, build, actions) {
 // ---------- 登录 / 初始化 ----------
 // 补齐旧数据里缺失的字段，并保证当前选中的订阅组存在
 function normalize(c) {
-  c.templates ||= []; c.userAgent ||= ''; c.unlockUserAgent ||= '';
+  c.templates ||= []; c.sources ||= []; c.userAgent ||= ''; c.unlockUserAgent ||= '';
   for (const t of [...c.profiles, ...c.templates]) { t.groups ||= []; t.ruleSets ||= []; t.rulesBefore ||= ''; t.rulesAfter ||= ''; t.parser ||= ''; }
-  for (const p of c.profiles) for (const s of p.subscriptions) { s.kind ||= 'remote'; s.uaMode ||= 'fixed'; s.nodes ||= ''; }
+  for (const s of c.sources) { s.kind ||= 'remote'; s.uaMode ||= 'fixed'; s.nodes ||= ''; s.url ||= ''; s.unlockUrl ||= ''; }
+  const ids = new Set(c.sources.map(s => s.id));
+  for (const p of c.profiles) { p.sources = (p.sources || []).filter(r => ids.has(r.source)); }
   pi = Math.min(pi, c.profiles.length - 1);
   return c;
 }
@@ -373,9 +383,10 @@ function rail() {
     h('div', { class: 'rail-label' }, '订阅组'),
     h('div', { class: 'glist' },
       cfg.profiles.map((p, i) => h('button', { class: 'gitem' + (on('group', i) ? ' on' : ''), 'aria-current': on('group', i) ? 'page' : null, onclick: () => go('group', i) },
-        h('b', {}, p.name || '(未命名)'), h('small', {}, `${p.subscriptions.length} 个节点来源`))),
+        h('b', {}, p.name || '(未命名)'), h('small', {}, `${p.sources.length} 个节点来源`))),
       h('button', { class: 'gnew', onclick: newGroupDialog }, '+ 新建订阅组')),
     h('div', { class: 'railnav' },
+      h('button', { class: on('sources') ? 'on' : '', onclick: () => go('sources') }, '节点来源'),
       h('button', { class: on('templates') ? 'on' : '', onclick: () => go('templates') }, '模板'),
       h('button', { class: on('settings') ? 'on' : '', onclick: () => go('settings') }, '全局设置'),
       h('button', { onclick: async () => { if (dirty && !confirm('有未保存的修改，确定退出登录？')) return; dirty = false; await api('POST', '/api/logout'); boot(); } }, '退出登录')));
@@ -386,13 +397,13 @@ function saveControls() {
   return [d, h('button', { id: 'save', class: 'primary', disabled: !dirty, onclick: save }, '保存修改')];
 }
 function render() {
-  const body = page === 'group' ? groupPage() : page === 'templates' ? templatesPage() : settingsPage();
+  const body = page === 'group' ? groupPage() : page === 'sources' ? sourcesPage() : page === 'templates' ? templatesPage() : settingsPage();
   app.replaceChildren(h('div', { class: 'shell' }, rail(), h('main', {}, body)));
 }
 
 // ---------- 订阅组工作区 ----------
 const GROUP_TABS = [
-  ['subs', '订阅源', p => p.subscriptions.length], ['groups', '策略组', p => p.groups.length], ['rules', '规则', p => p.ruleSets.length],
+  ['subs', '订阅源', p => p.sources.length], ['groups', '策略组', p => p.groups.length], ['rules', '规则', p => p.ruleSets.length],
   ['parser', 'Parser'], ['preview', '预览'], ['more', '本组设置'],
 ];
 const subLink = p => `${location.origin}/sub/${p.token}`;
@@ -413,41 +424,75 @@ function groupPage() {
   ];
 }
 
+// 来源本身的表单项（名称、链接等）。来源是全局的：在哪个订阅组里改，引用它的其他订阅组都跟着变
+function sourceFields(s, onName) {
+  return [
+    field('名称', s, 'name', { onchange: onName }),
+    s.kind === 'manual' ? field('节点（Clash YAML 数组，或每行一条 ss / vmess / trojan / vless / hysteria2 分享链接）', s, 'nodes', { type: 'textarea', rows: 8, wide: true,
+      placeholder: '- {name: 我的节点, type: ss, server: 1.2.3.4, port: 8388, cipher: aes-256-gcm, password: xxx}\n或\nss://…#节点名' }) : [
+      field('拉取上游时使用的 UA', s, 'uaMode', { options: [['passthrough', '透传客户端的 UA'], ['fixed', '固定 UA（全局设置）']], onchange: render }),
+      field('订阅链接（Clash 格式，或分享链接列表）', s, 'url', { wide: true, placeholder: 'https://…' }),
+      field('解锁地址（可选，每次拉取前先访问一次）', s, 'unlockUrl', { wide: true, placeholder: 'https://…' }),
+    ],
+  ];
+}
+const sourceChips = s => s.kind === 'manual' ? ['手动节点'] : [s.uaMode === 'passthrough' ? '透传 UA' : '固定 UA', s.unlockUrl.trim() && '需解锁'];
+function newSource(kind) {
+  const s = { id: newID(), kind, name: kind === 'manual' ? '手动节点' : '订阅 ' + (cfg.sources.filter(x => x.kind !== 'manual').length + 1), nodes: '', url: '', uaMode: 'passthrough', unlockUrl: '' };
+  cfg.sources.push(s);
+  return s;
+}
+
 function tabSubs(p) {
-  const status = Object.fromEntries((previews[p.id]?.subs || []).map(s => [s.id, s]));
-  const add = extra => {
-    const s = { id: '', name: '', enabled: true, prefix: '', include: '', exclude: '', nodes: '', url: '', uaMode: 'passthrough', unlockUrl: '', ...extra };
-    p.subscriptions.push(s); openItems.add(s); markDirty(); render();
+  const status = previews[p.id]?.subs || [];
+  const use = s => { const r = { source: s.id, enabled: true, prefix: '', include: '', exclude: '' }; p.sources.push(r); openItems.add(r); markDirty(); render(); };
+  const remove = i => {
+    const [r] = p.sources.splice(i, 1), s = srcOf(r.source);
+    // 没有订阅组在用了：还没填内容的直接删掉，填过的问一下
+    if (usersOf(s.id).length === 0 && (!(s.url.trim() || s.nodes.trim())
+      || confirm(`「${s.name}」已经没有订阅组在用了。\n\n确定：同时删除这个来源\n取消：保留在「节点来源」页，以后可以再添加`))) cfg.sources.splice(cfg.sources.indexOf(s), 1);
+    markDirty(); render();
   };
   return [
-    p.subscriptions.length === 0 ? empty('还没有节点来源', '添加订阅链接，或手动填写节点。它们会合并成这个订阅组的输出。')
-      : h('div', { class: 'list' }, p.subscriptions.map((s, i) => {
-        const st = status[s.id], manual = s.kind === 'manual';
-        return item(s, {
-          name: s.name, off: !s.enabled,
-          lead: field('', s, 'enabled', { type: 'checkbox', aria: '启用', onchange: render }),
-          chips: manual ? ['手动节点'] : [s.uaMode === 'passthrough' ? '透传 UA' : '固定 UA', s.unlockUrl.trim() && '需解锁'],
+    p.sources.length === 0 ? empty('还没有节点来源', '添加订阅链接，或手动填写节点。它们会合并成这个订阅组的输出。')
+      : h('div', { class: 'list' }, p.sources.map((r, i) => {
+        const s = srcOf(r.source), others = usersOf(s.id).filter(x => x !== p);
+        const st = status.find(x => x.index === i && x.id === s.id);
+        return item(r, {
+          name: s.name, off: !r.enabled,
+          lead: field('', r, 'enabled', { type: 'checkbox', aria: '启用', onchange: render }),
+          chips: [...sourceChips(s), others.length > 0 && `${others.length + 1} 个订阅组共用`],
           status: st && (st.error ? h('span', { class: 'tag err', title: st.error }, (st.stale ? `失败，用缓存 ${st.used} 个：` : '失败：') + st.error)
             : h('span', { class: 'tag ok' }, `${st.used} / ${st.count} 个节点`)),
-          controls: listButtons(p.subscriptions, i),
-          body: nameEl => h('div', { class: 'grid' },
-            field('名称', s, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
-            manual ? field('节点（Clash YAML 数组，或每行一条 ss / vmess / trojan / vless / hysteria2 分享链接）', s, 'nodes', { type: 'textarea', rows: 8, wide: true,
-              placeholder: '- {name: 我的节点, type: ss, server: 1.2.3.4, port: 8388, cipher: aes-256-gcm, password: xxx}\n或\nss://…#节点名' }) : [
-              field('拉取上游时使用的 UA', s, 'uaMode', { options: [['passthrough', '透传客户端的 UA'], ['fixed', '固定 UA（全局设置）']], onchange: render }),
-              field('订阅链接（Clash 格式，或分享链接列表）', s, 'url', { wide: true, placeholder: 'https://…' }),
-              field('解锁地址（可选，每次拉取前先访问一次）', s, 'unlockUrl', { wide: true, placeholder: 'https://…' }),
-            ],
-            field('节点名前缀（可选）', s, 'prefix', { placeholder: '例：[机场A] ' }),
-            field('只保留匹配的节点（正则，可选）', s, 'include', { placeholder: '例：香港|日本' }),
-            field('排除匹配的节点（正则，可选）', s, 'exclude', { placeholder: '例：过期|剩余|官网' })),
+          controls: listButtons(p.sources, i, () => remove(i)),
+          body: nameEl => [
+            others.length > 0 && h('div', { class: 'sublabel' }, `这个来源还被 ${quote(others)} 使用。名称、链接这些属于来源本身，在这里改，它们也跟着变。`),
+            h('div', { class: 'grid' }, sourceFields(s, v => { nameEl.textContent = v || '(未命名)'; })),
+            h('div', { class: 'subhead' }, '在本组里', h('small', {}, '只影响这个订阅组')),
+            h('div', { class: 'grid' },
+              field('节点名前缀（可选）', r, 'prefix', { placeholder: '例：[机场A] ' }),
+              field('只保留匹配的节点（正则，可选）', r, 'include', { placeholder: '例：香港|日本' }),
+              field('排除匹配的节点（正则，可选）', r, 'exclude', { placeholder: '例：过期|剩余|官网' })),
+          ],
         });
       })),
     h('div', { class: 'row' },
-      h('button', { onclick: () => add({ kind: 'remote', name: '订阅 ' + (p.subscriptions.length + 1) }) }, '+ 添加订阅链接'),
-      h('button', { onclick: () => add({ kind: 'manual', name: '手动节点' }) }, '+ 添加手动节点')),
-    h('p', { class: 'hint', style: 'margin-top:16px' }, '「客户端」指用本组订阅链接来更新的软件。透传 UA 时，客户端用什么 UA 来拉取，就用什么 UA 去拉上游；客户端没带 UA 时用固定 UA。固定 UA 和缓存时间在「全局设置」里调整。'),
+      h('button', { onclick: () => use(newSource('remote')) }, '+ 添加订阅链接'),
+      h('button', { onclick: () => use(newSource('manual')) }, '+ 添加手动节点'),
+      cfg.sources.length > 0 && h('button', { onclick: () => pickSourceDialog(p, use) }, '+ 使用已有来源')),
+    h('p', { class: 'hint', style: 'margin-top:16px' }, '节点来源可以被多个订阅组共用：链接只填一次，各组用自己的前缀和过滤。「客户端」指用本组订阅链接来更新的软件。透传 UA 时，客户端用什么 UA 来拉取，就用什么 UA 去拉上游；客户端没带 UA 时用固定 UA。固定 UA 和缓存时间在「全局设置」里调整。'),
   ];
+}
+function pickSourceDialog(p, use) {
+  let picked = cfg.sources.find(s => !p.sources.some(r => r.source === s.id)) || cfg.sources[0];
+  const pickEl = h('div', { class: 'pick' });
+  const draw = () => pickEl.replaceChildren(...cfg.sources.map(s => h('button', { class: s === picked ? 'on' : '', onclick: () => { picked = s; draw(); } },
+    h('b', {}, s.name || '(未命名)'), sourceChips(s).filter(Boolean).map(c => h('span', { class: 'chip' }, c)),
+    p.sources.some(r => r.source === s.id) && h('span', { class: 'chip' }, '本组已添加'))));
+  draw();
+  dialog('使用已有的节点来源', () => [
+    h('p', { class: 'hint' }, `把其他订阅组已经配置好的来源加到「${p.name}」。来源本身（链接、UA 模式等）是共用的，前缀和过滤各组单独设置。`), pickEl,
+  ], [{ label: '添加到本组', primary: true, onclick: close => { close(); use(picked); } }]);
 }
 
 // 「套用模板」「存为模板」工具栏
@@ -492,12 +537,12 @@ function newGroupDialog() {
   const first = kind => opts(kind)[0][0];
   const draft = { name: '订阅组 ' + (cfg.profiles.length + 1), groups: first('groups'), rules: first('rules') };
   dialog('新建订阅组', () => [
-    h('p', { class: 'hint' }, '每个订阅组有自己的节点来源、策略组、规则和订阅链接。策略组和规则可以先从模板复制一份，之后随时修改。'),
+    h('p', { class: 'hint' }, '每个订阅组有自己的策略组、规则和订阅链接，节点来源可以和其他订阅组共用。策略组和规则可以先从模板复制一份，之后随时修改。'),
     field('名称', draft, 'name', { local: true }),
     field('策略组', draft, 'groups', { options: opts('groups'), local: true }),
     field('规则', draft, 'rules', { options: opts('rules'), local: true }),
   ], [{ label: '新建订阅组', primary: true, onclick: close => {
-    const p = { id: '', name: draft.name.trim() || '未命名', token: '', fileName: '', subscriptions: [], groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '' };
+    const p = { id: '', name: draft.name.trim() || '未命名', token: '', fileName: '', sources: [], groups: [], rulesBefore: '', ruleSets: [], rulesAfter: '', parser: '' };
     for (const kind of ['groups', 'rules']) if (draft[kind] !== '') for (const f of KINDS[kind].fields) p[f] = clone(cfg.templates[+draft[kind]][f]);
     cfg.profiles.push(p); markDirty(); close(); tab = 'subs'; go('group', cfg.profiles.length - 1);
   } }]);
@@ -628,14 +673,44 @@ function tabMore(p) {
       h('p', { class: 'hint' }, '客户端里显示的配置名称。留空则使用订阅组名称。'),
       field('', p, 'fileName', { placeholder: p.name })),
     h('div', { class: 'card' }, h('h3', {}, '复制或删除'),
-      h('p', { class: 'hint' }, '复制会得到一个内容相同、链接不同的新订阅组。删除在保存修改后生效，它的订阅链接随之失效。'),
+      h('p', { class: 'hint' }, '复制会得到一个内容相同、链接不同的新订阅组，节点来源与原来的共用。删除在保存修改后生效，它的订阅链接随之失效。'),
       h('div', { class: 'row' },
         h('button', { onclick: () => {
-          const c = clone(p); c.id = ''; c.token = ''; c.name = p.name + ' 副本'; c.subscriptions.forEach(s => { s.id = ''; });
+          const c = clone(p); c.id = ''; c.token = ''; c.name = p.name + ' 副本';
           cfg.profiles.push(c); markDirty(); tab = 'subs'; go('group', cfg.profiles.length - 1);
         } }, '复制这个订阅组'),
         h('button', { class: 'danger', disabled: cfg.profiles.length < 2, title: cfg.profiles.length < 2 ? '至少保留一个订阅组' : null,
           onclick: () => { if (!confirm(`删除订阅组「${p.name}」？`)) return; cfg.profiles.splice(pi, 1); pi = Math.max(0, pi - 1); tab = 'subs'; markDirty(); render(); } }, '删除这个订阅组'))),
+  ];
+}
+
+// ---------- 节点来源 ----------
+function sourcesPage() {
+  const add = kind => { openItems.add(newSource(kind)); markDirty(); render(); };
+  return [
+    h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '节点来源'), saveControls())),
+    h('div', { class: 'content' },
+      h('p', { class: 'hint' }, '所有订阅组可以使用的节点来源。一个来源可以被多个订阅组引用：链接、UA 模式、解锁地址在这里（或任意一个用到它的订阅组里）改一次，各组都生效；是否启用、前缀和过滤由各订阅组自己决定。'),
+      cfg.sources.length === 0 ? empty('还没有节点来源', '在这里添加，或直接在订阅组的「订阅源」页添加。')
+        : h('div', { class: 'list' }, cfg.sources.map(s => {
+          const users = usersOf(s.id);
+          return item(s, {
+            name: s.name, chips: [...sourceChips(s), users.length > 0 ? `${users.length} 个订阅组在用` : '未被使用'],
+            controls: h('button', { class: 'sm danger', onclick: () => {
+              if (!confirm(users.length > 0 ? `删除来源「${s.name}」？它会同时从 ${quote(users)} 里移除。` : `删除来源「${s.name}」？`)) return;
+              cfg.sources.splice(cfg.sources.indexOf(s), 1);
+              for (const p of cfg.profiles) p.sources = p.sources.filter(r => r.source !== s.id);
+              markDirty(); render();
+            } }, '删除'),
+            body: nameEl => [
+              h('div', { class: 'sublabel' }, users.length > 0 ? `正在使用它的订阅组：${quote(users)}` : '还没有订阅组使用它。到订阅组的「订阅源」页点「使用已有来源」添加。'),
+              h('div', { class: 'grid' }, sourceFields(s, v => { nameEl.textContent = v || '(未命名)'; })),
+            ],
+          });
+        })),
+      h('div', { class: 'row' },
+        h('button', { onclick: () => add('remote') }, '+ 添加订阅链接'),
+        h('button', { onclick: () => add('manual') }, '+ 添加手动节点'))),
   ];
 }
 
@@ -673,7 +748,7 @@ function settingsPage() {
     h('div', { class: 'content' },
       datalist('ua', UA_PRESETS),
       h('div', { class: 'card' }, h('h3', {}, '拉取与缓存'),
-        h('p', { class: 'hint' }, '缓存按「订阅 + 实际链接 + 实际 UA」分别保存：同一个 UA 在缓存时间内重复拉取不会再请求上游。上游拉取失败时，只会继续使用同一链接和 UA 上一次成功的结果。'),
+        h('p', { class: 'hint' }, '缓存按「来源 + 实际链接 + 实际 UA」分别保存，引用同一个来源的订阅组共用：同一个 UA 在缓存时间内重复拉取不会再请求上游。上游拉取失败时，只会继续使用同一链接和 UA 上一次成功的结果。'),
         h('div', { class: 'grid' },
           field('上游订阅缓存时间（分钟，0 为每次都拉取）', cfg, 'cacheMinutes', { type: 'number', min: 0 }),
           field('建议客户端更新间隔（小时）', cfg, 'updateInterval', { type: 'number', min: 1 }),

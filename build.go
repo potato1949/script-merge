@@ -84,7 +84,7 @@ func parseCustomProxies(text string) ([]map[string]any, error) {
 
 // resolveUA 决定某个订阅本次拉取上游用哪个 UA：透传模式下用拉取合并链接的客户端的 UA，
 // 否则（或客户端没带 UA 时）用全局设置里的固定 UA。
-func resolveUA(cfg Config, s Subscription, clientUA string) string {
+func resolveUA(cfg Config, s Source, clientUA string) string {
 	if s.UAMode == "passthrough" && clientUA != "" {
 		return clientUA
 	}
@@ -103,11 +103,27 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 	}
 
 	// 1. 并发拉取订阅
-	var subs []Subscription
-	for _, s := range p.Subscriptions {
-		if s.Enabled {
-			subs = append(subs, s)
+	// 来源是全局对象，订阅组里只有引用；同一个来源被多个订阅组（或同组多次）引用时共用缓存
+	type usedSource struct {
+		Source
+		SourceRef
+		index int
+	}
+	byID := map[string]Source{}
+	for _, s := range cfg.Sources {
+		byID[s.ID] = s
+	}
+	var subs []usedSource
+	for i, ref := range p.Sources {
+		if !ref.Enabled {
+			continue
 		}
+		src, ok := byID[ref.Source]
+		if !ok { // validateConfig 会去掉悬空引用，正常不会走到
+			warn("第 %d 个节点来源不存在，已忽略", i+1)
+			continue
+		}
+		subs = append(subs, usedSource{src, ref, i})
 	}
 	entries := make([]*cacheEntry, len(subs))
 	res.Subs = make([]SubStatus, len(subs))
@@ -119,7 +135,7 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 		go func() {
 			defer wg.Done()
 			if s.Kind == "manual" {
-				st := SubStatus{ID: s.ID, Name: s.Name}
+				st := SubStatus{Index: s.index, ID: s.ID, Name: s.Name}
 				nodes, err := parseCustomProxies(s.Nodes)
 				if err != nil {
 					st.Error = err.Error()
@@ -130,14 +146,14 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 				res.Subs[i] = st
 				return
 			}
-			url, ua := strings.TrimSpace(s.URL), resolveUA(cfg, s, clientUA)
-			st := SubStatus{ID: s.ID, Name: s.Name, URL: url, UA: ua}
+			url, ua := strings.TrimSpace(s.URL), resolveUA(cfg, s.Source, clientUA)
+			st := SubStatus{Index: s.index, ID: s.ID, Name: s.Name, URL: url, UA: ua}
 			if url == "" {
 				st.Error = "没有填写订阅链接"
 				res.Subs[i] = st
 				return
 			}
-			e, err := f.Get(s, url, ua, unlockUA, ttl, force)
+			e, err := f.Get(s.Source, url, ua, unlockUA, ttl, force)
 			if err != nil {
 				st.Error = err.Error()
 				st.Stale = e != nil

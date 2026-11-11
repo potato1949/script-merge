@@ -39,7 +39,8 @@ type cacheEntry struct {
 
 // SubStatus 描述一次构建中某个订阅的状态。
 type SubStatus struct {
-	ID        string    `json:"id"`
+	Index     int       `json:"index"` // 在订阅组的来源列表里的下标
+	ID        string    `json:"id"`    // 来源 ID
 	Name      string    `json:"name"`
 	URL       string    `json:"url"`   // 本次实际使用的上游链接
 	UA        string    `json:"ua"`    // 本次实际使用的 UA
@@ -55,7 +56,8 @@ type failure struct {
 	err error
 }
 
-// Fetcher 按「订阅 + 链接 + UA + 解锁地址」缓存上游结果，内存与磁盘各一份。
+// Fetcher 按「来源 + 链接 + UA + 解锁地址」缓存上游结果，内存与磁盘各一份。
+// 来源是全局的，所以引用同一个来源的订阅组共用缓存。
 type Fetcher struct {
 	mu    sync.Mutex
 	dir   string
@@ -137,7 +139,7 @@ func (f *Fetcher) store(e *cacheEntry) {
 // Get 以给定的链接和 UA 拉取订阅；unlockUA 是访问解锁地址用的 UA。
 // 缓存未过期时直接返回缓存；拉取失败时返回 (同一链接 + UA 的旧缓存或 nil, err)。
 // 不会回退到其他链接 / UA 的结果：不同 UA 拿到的节点可能不同，某个 UA 失败就是失败。
-func (f *Fetcher) Get(sub Subscription, url, ua, unlockUA string, ttl time.Duration, force bool) (*cacheEntry, error) {
+func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, force bool) (*cacheEntry, error) {
 	key := cacheKey(sub.ID, url, ua, sub.UnlockURL, unlockUA)
 	l := f.keyLock(key)
 	l.Lock()

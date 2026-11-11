@@ -16,6 +16,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// setSubs 用 v4 的「订阅」写法给订阅组配置节点来源：每条订阅变成一个全局来源加一条引用。
+func setSubs(cfg *Config, p *Profile, subs ...Subscription) {
+	for _, s := range subs {
+		src, ref := splitSubscription(s)
+		cfg.Sources = append(cfg.Sources, src)
+		p.Sources = append(p.Sources, ref)
+	}
+}
+
 func testRoot() map[string]any {
 	return map[string]any{
 		"dns": map[string]any{"enable": true},
@@ -157,6 +166,7 @@ func TestBuildEndToEnd(t *testing.T) {
 	var mu sync.Mutex
 	var unlockUAs []string // 解锁地址收到的 UA，按请求顺序
 	var unlocked atomic.Bool
+	var plainHits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/unlock":
@@ -173,6 +183,7 @@ func TestBuildEndToEnd(t *testing.T) {
 			w.Header().Set("Subscription-Userinfo", "upload=1; download=2; total=100; expire=2000")
 			fmt.Fprint(w, "proxies:\n  - {name: 香港 01, type: ss, server: a.com, port: 443, cipher: aes-128-gcm, password: 'true'}\n  - {name: 过期提醒, type: ss, server: b.com, port: 1}\n")
 		case "/plain":
+			plainHits.Add(1)
 			w.Header().Set("Subscription-Userinfo", "upload=10; download=20; total=1000; expire=1000")
 			fmt.Fprint(w, "proxies:\n  - {name: 香港 01, type: trojan, server: c.com, port: 443, password: x}\n")
 		default:
@@ -184,14 +195,16 @@ func TestBuildEndToEnd(t *testing.T) {
 	cfg := defaultConfig()
 	cfg.UserAgent = "ClashforWindows/0.20.39" // 全局固定 UA
 	p := &cfg.Profiles[0]
-	p.Subscriptions = []Subscription{
-		{ID: "aaaaaaaaaaaaaaaa", Name: "A", URL: upstream.URL + "/locked", UnlockURL: upstream.URL + "/unlock", Enabled: true, Exclude: "过期"},
-		{ID: "bbbbbbbbbbbbbbbb", Name: "B", URL: upstream.URL + "/plain", Enabled: true, Prefix: "[B] "},
-		{ID: "cccccccccccccccc", Name: "C", URL: upstream.URL + "/missing", Enabled: true}, // 上游 404 → 失败
-		{ID: "dddddddddddddddd", Name: "D", URL: upstream.URL + "/plain", Enabled: true},   // 与 A 重名
-	}
-	p.Subscriptions = append(p.Subscriptions, Subscription{ID: "eeeeeeeeeeeeeeee", Kind: "manual", Name: "手动", Enabled: true, Prefix: "[M] ",
-		Nodes: "- {name: 自建, type: http, server: 9.9.9.9, port: 8080}\n- {name: 排除我, type: http, server: 9.9.9.8, port: 8080}", Exclude: "排除"})
+	setSubs(&cfg, p,
+		Subscription{ID: "aaaaaaaaaaaaaaaa", Name: "A", URL: upstream.URL + "/locked", UnlockURL: upstream.URL + "/unlock", Enabled: true, Exclude: "过期"},
+		Subscription{ID: "bbbbbbbbbbbbbbbb", Name: "B", URL: upstream.URL + "/plain", Enabled: true, Prefix: "[B] "},
+		Subscription{ID: "cccccccccccccccc", Name: "C", URL: upstream.URL + "/missing", Enabled: true}, // 上游 404 → 失败
+		Subscription{ID: "eeeeeeeeeeeeeeee", Kind: "manual", Name: "手动", Enabled: true, Prefix: "[M] ",
+			Nodes: "- {name: 自建, type: http, server: 9.9.9.9, port: 8080}\n- {name: 排除我, type: http, server: 9.9.9.8, port: 8080}", Exclude: "排除"},
+		Subscription{ID: "ffffffffffffffff", Name: "停用", URL: upstream.URL + "/plain"},
+	)
+	// 同一个来源在本组里再引用一次（不加前缀）：节点与 A 重名，且不会再请求一次上游
+	p.Sources = append(p.Sources[:3:3], append([]SourceRef{{Source: "bbbbbbbbbbbbbbbb", Enabled: true}}, p.Sources[3:]...)...)
 	p.Groups = append(p.Groups, Group{Name: "🇭🇰 香港", Type: "url-test", Nodes: "filter", Filter: "^(?!.*B).*香港"})
 	p.RulesBefore = "# 注释\n- DOMAIN,my.com,🇭🇰 香港\nDOMAIN,bad.com,不存在"
 	p.Parser = "yaml:\n  commands:\n    - dns.enable=false\n    - proxy-groups.(🇭🇰 香港).proxies+[]proxyNames|自建\n" // Parser 能引用手动节点
@@ -223,6 +236,13 @@ func TestBuildEndToEnd(t *testing.T) {
 	}
 	if res.Subs[0].Used != 1 || res.Subs[0].Error != "" || res.Subs[2].Error == "" {
 		t.Errorf("订阅状态不符: %+v", res.Subs)
+	}
+	// 停用的引用不出现在状态里；Index 是引用在订阅组里的下标，ID 是来源 ID
+	if len(res.Subs) != 5 || res.Subs[3].Index != 3 || res.Subs[3].ID != "bbbbbbbbbbbbbbbb" || res.Subs[4].Name != "手动" {
+		t.Errorf("来源状态的下标不符: %+v", res.Subs)
+	}
+	if n := plainHits.Load(); n != 1 {
+		t.Errorf("同一个来源被引用两次，上游应只被请求 1 次，实际 %d 次", n)
 	}
 	if res.Userinfo != "upload=21; download=42; total=2100; expire=1000" {
 		t.Errorf("userinfo = %q", res.Userinfo)
@@ -292,11 +312,11 @@ func TestUAPassthrough(t *testing.T) {
 	cfg.CacheMinutes = 5
 	cfg.UserAgent = "fixed/1" // 全局固定 UA：固定模式用它，透传模式下客户端没带 UA 时也用它
 	p := &cfg.Profiles[0]
-	p.Subscriptions = []Subscription{
-		{ID: "aaaaaaaaaaaaaaaa", Name: "透传", URL: upstream.URL + "/default", Enabled: true, UAMode: "passthrough"},
-		{ID: "bbbbbbbbbbbbbbbb", Name: "固定", URL: upstream.URL + "/fixed", Enabled: true},
-		{ID: "cccccccccccccccc", Name: "没填链接", Enabled: true},
-	}
+	setSubs(&cfg, p,
+		Subscription{ID: "aaaaaaaaaaaaaaaa", Name: "透传", URL: upstream.URL + "/default", Enabled: true, UAMode: "passthrough"},
+		Subscription{ID: "bbbbbbbbbbbbbbbb", Name: "固定", URL: upstream.URL + "/fixed", Enabled: true},
+		Subscription{ID: "cccccccccccccccc", Name: "没填链接", Enabled: true},
+	)
 	f := NewFetcher(t.TempDir())
 	nodes := func(ua string) string {
 		res, err := Build(cfg, *p, f, ua, false)
@@ -372,6 +392,9 @@ func TestMigrateLegacyConfig(t *testing.T) {
 			t.Fatalf("结构不符: %+v", c)
 		}
 		for _, p := range c.Profiles {
+			if p.LegacySubscriptions != nil {
+				t.Errorf("「%s」的旧订阅没有被移除", p.Name)
+			}
 			if len(p.Groups) != 1 || p.Groups[0].Name != "G" || len(p.RuleSets) != 1 || p.RulesBefore != "DOMAIN,a.com,G" || p.RulesAfter != "MATCH,G" {
 				t.Errorf("「%s」没有拿到共用的策略组和规则: %+v", p.Name, p)
 			}
@@ -388,9 +411,11 @@ func TestMigrateLegacyConfig(t *testing.T) {
 		"customProxies":"- {name: x, type: http, server: 1.1.1.1, port: 80}",` + shared + `}}`)
 	check(c, 1)
 	p := c.Profiles[0]
-	if p.Token != "tok123" || p.FileName != "old" || len(p.Subscriptions) != 2 || p.Subscriptions[1].Kind != "manual" ||
-		!strings.Contains(p.Subscriptions[1].Nodes, "name: x") || p.Parser != "yaml: {}" {
-		t.Errorf("v1 迁移结果不符: %+v", p)
+	if p.Token != "tok123" || p.FileName != "old" || len(p.Sources) != 2 || len(c.Sources) != 2 || p.Parser != "yaml: {}" ||
+		c.Sources[0].ID != "aaaaaaaaaaaaaaaa" || c.Sources[0].URL != "https://a.example/s" || c.Sources[0].UAMode != "fixed" ||
+		p.Sources[0].Source != "aaaaaaaaaaaaaaaa" || !p.Sources[0].Enabled ||
+		c.Sources[1].Kind != "manual" || !strings.Contains(c.Sources[1].Nodes, "name: x") || p.Sources[1].Source != c.Sources[1].ID {
+		t.Errorf("v1 迁移结果不符: %+v / %+v", p, c.Sources)
 	}
 
 	// v2：多订阅组，策略组和规则共用
@@ -399,7 +424,7 @@ func TestMigrateLegacyConfig(t *testing.T) {
 		{"id":"2222222222222222","name":"P2","token":"t2","subscriptions":[],"customProxies":"ss://YWVzLTI1Ni1nY206cGFzcw@1.2.3.4:8388#n","parser":""}],` + shared + `}}`)
 	check(c, 2)
 	if c.Profiles[0].Token != "t1" || c.Profiles[0].Parser != "commands: []" || c.Profiles[1].Parser != "yaml: {}" ||
-		len(c.Profiles[0].Subscriptions) != 0 || len(c.Profiles[1].Subscriptions) != 1 || c.BaseConfig != "mode: rule" {
+		len(c.Profiles[0].Sources) != 0 || len(c.Profiles[1].Sources) != 1 || len(c.Sources) != 1 || c.BaseConfig != "mode: rule" {
 		t.Errorf("v2 迁移结果不符: %+v", c.Profiles)
 	}
 	c.Profiles[0].Groups[0].Name = "改" // 各组拿到的是独立副本
@@ -417,16 +442,11 @@ func TestMigrateLegacyConfig(t *testing.T) {
 			{"id":"cccccccccccccccc","kind":"manual","name":"M","enabled":true,"userAgent":"other/2","nodes":"- {name: x, type: http, server: 1.1.1.1, port: 80}","variants":[]}]}]}}`
 	c = open(strings.ReplaceAll(v3, "UA_B", "mihomo/1.19"))
 	p = c.Profiles[0]
-	if c.Version != configVersion || len(c.Templates) != 1 || p.Token != "t1" || p.RulesAfter != "MATCH,DIRECT" || len(p.Subscriptions) != 3 {
+	if c.Version != configVersion || len(c.Templates) != 1 || p.Token != "t1" || p.RulesAfter != "MATCH,DIRECT" || len(p.Sources) != 3 || len(c.Sources) != 3 {
 		t.Fatalf("v3 迁移后结构不符: %+v", c)
 	}
-	if p.Subscriptions[0].URL != "https://a.example/s" || p.Subscriptions[1].URL != "https://b.example/stash" {
-		t.Errorf("v3 迁移后的订阅链接不符: %+v", p.Subscriptions)
-	}
-	for _, s := range p.Subscriptions {
-		if s.LegacyVariants != nil || s.LegacyUserAgent != "" {
-			t.Errorf("「%s」的专用链接或固定 UA 没有被移除: %+v", s.Name, s)
-		}
+	if c.Sources[0].URL != "https://a.example/s" || c.Sources[1].URL != "https://b.example/stash" {
+		t.Errorf("v3 迁移后的订阅链接不符: %+v", c.Sources)
 	}
 	if c.UserAgent != "mihomo/1.19" || c.UnlockUserAgent != "" {
 		t.Errorf("v3 迁移后的全局 UA 不符: %q / %q", c.UserAgent, c.UnlockUserAgent)
@@ -434,6 +454,96 @@ func TestMigrateLegacyConfig(t *testing.T) {
 	// 订阅里填的就是内置默认 UA 时，全局留空（继续跟随默认值）
 	if c = open(strings.ReplaceAll(v3, "UA_B", defaultUA)); c.UserAgent != "" {
 		t.Errorf("默认 UA 不应写进全局设置: %q", c.UserAgent)
+	}
+}
+
+// v4 → v5：各订阅组里的订阅提成全局来源，内容相同的合并，过滤和前缀留在订阅组的引用上
+func TestMigrateSharedSources(t *testing.T) {
+	dir := t.TempDir()
+	const v4 = `{"auth":{"hash":"h","salt":"s"},"config":{"version":4,"baseConfig":"mode: rule","userAgent":"fixed/1","templates":[],
+		"profiles":[
+		{"id":"1111111111111111","name":"P1","token":"t1","subscriptions":[
+			{"id":"aaaaaaaaaaaaaaaa","name":"机场A","url":"https://a.example/s","uaMode":"passthrough","unlockUrl":"https://a.example/u","enabled":true,"prefix":"[1] ","include":"香港"},
+			{"id":"bbbbbbbbbbbbbbbb","kind":"manual","name":"自建","enabled":true,"nodes":"- {name: x, type: http, server: 1.1.1.1, port: 80}"},
+			{"id":"cccccccccccccccc","name":"没填","url":"","enabled":false}]},
+		{"id":"2222222222222222","name":"P2","token":"t2","subscriptions":[
+			{"id":"dddddddddddddddd","name":"A 的另一个名字","url":" https://a.example/s ","uaMode":"passthrough","unlockUrl":"https://a.example/u","enabled":false,"exclude":"过期"},
+			{"id":"eeeeeeeeeeeeeeee","name":"固定 UA 的 A","url":"https://a.example/s","uaMode":"fixed","unlockUrl":"https://a.example/u","enabled":true},
+			{"id":"ffffffffffffffff","kind":"manual","name":"自建 2","enabled":true,"nodes":"- {name: x, type: http, server: 1.1.1.1, port: 80}"},
+			{"id":"aaaaaaaaaaaaaaaa","name":"没填 2","url":"","enabled":true}]}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(v4), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := s.Config()
+	var names []string
+	for _, src := range c.Sources {
+		names = append(names, src.Name)
+	}
+	// P2 的第一条和 P1 的机场A 完全相同 → 合并；UA 模式不同的不合并；没填链接的各自保留（重复的 ID 重新生成）
+	if want := []string{"机场A", "自建", "没填", "固定 UA 的 A", "没填 2"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("来源 = %v", names)
+	}
+	a, manual := c.Sources[0], c.Sources[1]
+	if a.ID != "aaaaaaaaaaaaaaaa" || a.URL != "https://a.example/s" || a.UAMode != "passthrough" || a.UnlockURL != "https://a.example/u" || manual.Kind != "manual" {
+		t.Errorf("来源内容不符: %+v", c.Sources)
+	}
+	p1, p2 := c.Profiles[0], c.Profiles[1]
+	if !reflect.DeepEqual(p1.Sources, []SourceRef{
+		{Source: a.ID, Enabled: true, Prefix: "[1] ", Include: "香港"}, {Source: manual.ID, Enabled: true}, {Source: c.Sources[2].ID},
+	}) {
+		t.Errorf("P1 的引用不符: %+v", p1.Sources)
+	}
+	if !reflect.DeepEqual(p2.Sources, []SourceRef{
+		{Source: a.ID, Exclude: "过期"}, {Source: c.Sources[3].ID, Enabled: true}, {Source: manual.ID, Enabled: true}, {Source: c.Sources[4].ID, Enabled: true},
+	}) {
+		t.Errorf("P2 的引用不符: %+v", p2.Sources)
+	}
+	if id := c.Sources[4].ID; id == "aaaaaaaaaaaaaaaa" || !validID(id) {
+		t.Errorf("重复的来源 ID 没有重新生成: %q", id)
+	}
+	if p1.Token != "t1" || p2.Token != "t2" || c.UserAgent != "fixed/1" {
+		t.Errorf("其余内容应原样保留: %+v", c)
+	}
+	// 迁移结果能通过保存时的校验，且校验不改变它
+	before := s.Config()
+	if err := validateConfig(&c, map[string]string{p1.ID: "t1", p2.ID: "t2"}); err != nil || !reflect.DeepEqual(before.Sources, c.Sources) ||
+		!reflect.DeepEqual(before.Profiles[0].Sources, c.Profiles[0].Sources) || !reflect.DeepEqual(before.Profiles[1].Sources, c.Profiles[1].Sources) {
+		t.Errorf("迁移结果过不了校验或被校验改动: %v", err)
+	}
+}
+
+func TestValidateSourcesAndRefs(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Sources = []Source{
+		{ID: "aaaaaaaaaaaaaaaa", Name: "A", URL: "https://a.example/s", UAMode: "passthrough"},
+		{ID: "not-a-valid-id", Name: "B", Kind: "manual", Nodes: "- {name: x, type: http, server: 1.1.1.1, port: 80}", URL: "https://leftover.example"},
+		{ID: "aaaaaaaaaaaaaaaa", Name: "和 A 撞 ID"},
+	}
+	p := &cfg.Profiles[0]
+	p.Sources = []SourceRef{{Source: "aaaaaaaaaaaaaaaa", Enabled: true}, {Source: "not-a-valid-id", Prefix: "[B] "}, {Source: "gone"}, {Source: ""}}
+	if err := validateConfig(&cfg, map[string]string{p.ID: "tok"}); err != nil {
+		t.Fatal(err)
+	}
+	p = &cfg.Profiles[0]
+	b := cfg.Sources[1]
+	if !validID(b.ID) || b.URL != "" || cfg.Sources[2].ID == "aaaaaaaaaaaaaaaa" || cfg.Sources[2].Kind != "remote" || cfg.Sources[2].UAMode != "fixed" {
+		t.Errorf("来源没有被规范化: %+v", cfg.Sources)
+	}
+	// 悬空的引用被去掉；ID 被重新生成的来源，引用跟着改
+	if want := []SourceRef{{Source: "aaaaaaaaaaaaaaaa", Enabled: true}, {Source: b.ID, Prefix: "[B] "}}; !reflect.DeepEqual(p.Sources, want) {
+		t.Errorf("引用 = %+v", p.Sources)
+	}
+	if p.Token != "tok" {
+		t.Errorf("令牌 = %q", p.Token)
+	}
+
+	cfg.Sources[1].Nodes = "这不是节点"
+	if err := validateConfig(&cfg, nil); err == nil || !strings.Contains(err.Error(), "B") {
+		t.Errorf("手动节点格式错误应当报错: %v", err)
 	}
 }
 
@@ -453,8 +563,8 @@ func TestSeedTemplatesAreConsistent(t *testing.T) {
 			cfg := defaultConfig()
 			p := cfg.Profiles[0]
 			p.Groups, p.Rules = g.Groups, r.Rules
-			p.Subscriptions = []Subscription{{ID: "aaaaaaaaaaaaaaaa", Kind: "manual", Enabled: true,
-				Nodes: "- {name: 🇭🇰 HK 01, type: http, server: 1.1.1.1, port: 80}\n- {name: US-2, type: http, server: 1.1.1.2, port: 80}\n- {name: 日本 3, type: http, server: 1.1.1.3, port: 80}\n- {name: Singapore 4, type: http, server: 1.1.1.4, port: 80}"}}
+			setSubs(&cfg, &p, Subscription{ID: "aaaaaaaaaaaaaaaa", Kind: "manual", Enabled: true,
+				Nodes: "- {name: 🇭🇰 HK 01, type: http, server: 1.1.1.1, port: 80}\n- {name: US-2, type: http, server: 1.1.1.2, port: 80}\n- {name: 日本 3, type: http, server: 1.1.1.3, port: 80}\n- {name: Singapore 4, type: http, server: 1.1.1.4, port: 80}"})
 			res, err := Build(cfg, p, NewFetcher(t.TempDir()), "", false)
 			if err != nil || len(res.Warnings) > 0 {
 				t.Errorf("%s + %s: err=%v warnings=%v", g.Name, r.Name, err, res.Warnings)

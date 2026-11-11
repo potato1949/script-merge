@@ -267,10 +267,11 @@ func validateConfig(c *Config, tokens map[string]string) error {
 			return errors.New("全局设置里的 UA 不能超过 256 个字符，也不能包含换行等控制字符")
 		}
 	}
-	// ID 由服务端生成：订阅 ID 用作缓存文件名，订阅组 ID 用于保留令牌
+	// ID 只接受服务端生成的格式（前端新建来源时也按这个格式生成，以便保存前就能被引用）：
+	// 来源 ID 用作缓存文件名，订阅组 ID 用于保留令牌。格式不对或重复的一律重新生成
 	ids := map[string]bool{}
 	fixID := func(id *string) {
-		if len(*id) != 16 || strings.Trim(*id, "0123456789abcdef") != "" || ids[*id] {
+		if !validID(*id) || ids[*id] {
 			*id = randHex(8)
 		}
 		ids[*id] = true
@@ -285,39 +286,58 @@ func validateConfig(c *Config, tokens map[string]string) error {
 		if err := yaml.Unmarshal([]byte(p.Parser), &tmp); err != nil {
 			return errors.New("订阅组「" + p.Name + "」的 Parser 不是合法的 YAML: " + err.Error())
 		}
-		p.LegacyCustomProxies = ""
-		if p.Subscriptions == nil {
-			p.Subscriptions = []Subscription{}
-		}
+		p.LegacyCustomProxies, p.LegacySubscriptions = "", nil
 		if p.Groups == nil {
 			p.Groups = []Group{}
 		}
 		if p.RuleSets == nil {
 			p.RuleSets = []RuleSet{}
 		}
-		for i := range p.Subscriptions {
-			s := &p.Subscriptions[i]
-			fixID(&s.ID)
-			s.LegacyVariants, s.LegacyUserAgent = nil, ""
-			if s.Kind == "manual" {
-				if _, err := parseCustomProxies(s.Nodes); err != nil {
-					return errors.New("「" + p.Name + "」的「" + s.Name + "」: " + err.Error())
-				}
+	}
+	if c.Sources == nil {
+		c.Sources = []Source{}
+	}
+	sourceIDs := map[string]string{} // 提交时的来源 ID → 规范化后的 ID，用来修正订阅组里的引用
+	for i := range c.Sources {
+		s := &c.Sources[i]
+		old := s.ID
+		fixID(&s.ID)
+		if _, dup := sourceIDs[old]; old != "" && !dup {
+			sourceIDs[old] = s.ID
+		}
+		if strings.TrimSpace(s.Name) == "" {
+			s.Name = "来源 " + strconv.Itoa(i+1)
+		}
+		if s.Kind == "manual" {
+			s.URL, s.UnlockURL, s.UAMode = "", "", ""
+			if _, err := parseCustomProxies(s.Nodes); err != nil {
+				return errors.New("节点来源「" + s.Name + "」: " + err.Error())
+			}
+			continue
+		}
+		s.Kind, s.Nodes = "remote", ""
+		for _, u := range []string{s.URL, s.UnlockURL} {
+			if u = strings.TrimSpace(u); u == "" {
 				continue
 			}
-			s.Kind = "remote"
-			for _, u := range []string{s.URL, s.UnlockURL} {
-				if u = strings.TrimSpace(u); u == "" {
-					continue
-				}
-				if pu, err := url.Parse(u); err != nil || (pu.Scheme != "http" && pu.Scheme != "https") {
-					return errors.New("订阅「" + s.Name + "」的地址必须以 http:// 或 https:// 开头")
-				}
-			}
-			if s.UAMode != "passthrough" {
-				s.UAMode = "fixed"
+			if pu, err := url.Parse(u); err != nil || (pu.Scheme != "http" && pu.Scheme != "https") {
+				return errors.New("节点来源「" + s.Name + "」的地址必须以 http:// 或 https:// 开头")
 			}
 		}
+		if s.UAMode != "passthrough" {
+			s.UAMode = "fixed"
+		}
+	}
+	for pi := range c.Profiles {
+		p := &c.Profiles[pi]
+		refs := []SourceRef{}
+		for _, r := range p.Sources {
+			if id, ok := sourceIDs[r.Source]; ok { // 引用的来源不存在（已被删除）就去掉这条引用
+				r.Source = id
+				refs = append(refs, r)
+			}
+		}
+		p.Sources = refs
 	}
 	if c.Templates == nil {
 		c.Templates = []Template{}
