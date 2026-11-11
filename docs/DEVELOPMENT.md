@@ -20,6 +20,7 @@
 | `main.go` | 启动、路由、认证与会话、HTTP 处理函数、保存配置时的校验 |
 | `transfer.go` | 配置的导出与导入（整份配置 / 单个订阅组） |
 | `access.go` | 订阅链接的访问记录、客户端 IP 的判定 |
+| `history.go` | 配置的历史版本：保存时留下被替换的那份、列出、恢复 |
 | `rulenames.go` | 规则仓库的校验、从 GitHub 拉取规则清单、清单的保存 |
 | `store.go` | 数据模型、JSON 持久化、旧配置迁移、密码哈希、默认配置与内置模板 |
 | `fetch.go` | 拉取上游订阅（解锁、代理）、按链接 + UA 的缓存、订阅内容解析入口 |
@@ -27,6 +28,7 @@
 | `build.go` | 核心流程 `Build`：决定拉取用的 UA → 合并节点 → 策略组 → 规则 → Parser → 校验 → 输出 YAML |
 | `parser.go` | CFW Parsers 语法实现、正则封装 |
 | `web/index.html` | 管理界面，以及 UA 预设 |
+| `history_test.go` | 测试：保存冲突、历史版本、预览不保存、来源拉取状态 |
 | `app_test.go` | 测试：命令语法、Parser 顺序、分享链接、端到端构建、UA 透传、上游走代理、迁移、配置校验（来源与引用）、内置模板一致性 |
 | `transfer_test.go` | 测试：导出导入 |
 | `access_test.go` | 测试：访问记录、客户端 IP |
@@ -151,6 +153,10 @@ Config
 - 登录尝试被一把互斥锁串行化，失败后 sleep 1 秒，以此限制爆破速度
 - 订阅组的 `Token` 只由服务端生成：`PUT /api/config` 时按订阅组 ID 找回原令牌，前端传来的 `token` 一律忽略；新订阅组（ID 未知或为空）分配新 ID 和新令牌。唯一的例外是整份导入，见下
 
+**保存冲突**：前端每次保存都是整份替换，两个页面同时开着时后保存的会盖掉先保存的。所以 `Config.Revision` 每保存一次加一（`Store.SetConfig` 里做），`PUT /api/config` 带回的 `revision` 和当前的对不上就返回 409，前端询问用户后带 `?force=1` 重新提交。重置令牌、导入、恢复历史这些服务端自己发起的保存不检查（`expect` 传 -1）。
+
+**历史版本**（`history.go`）：`SetConfig` 在内容有变化时把被替换掉的那份写到 `DATA_DIR/history/<时间>-<版本号>.json`，只留最近 `maxHistory`（10）份；内容没变的保存不留。`POST /api/history {id}` 恢复某一份，和整份导入走同一个 `importConfig`（会迁移、校验，令牌以那份历史为准），恢复前的配置随之成为新的一份历史，所以恢复也能撤销。历史文件里有订阅链接和令牌，权限同 `config.json`。
+
 `DATA_DIR/access.json`：各订阅链接的访问记录，见「访问记录」。`DATA_DIR/cache/`：上游缓存。`DATA_DIR/rulenames.json`：各规则仓库的规则清单，见「规则仓库」。这三处都不属于配置，删掉只是丢历史 / 重新拉取。
 
 ### 迁移
@@ -226,9 +232,12 @@ Config
 | `POST /api/login` | 否 | `{password}` |
 | `POST /api/logout` | 否 | |
 | `GET /api/config` | 是 | 返回整个 `Config` |
-| `PUT /api/config` | 是 | 整体覆盖 `Config`（各订阅组的 `token` 会被忽略）；返回保存后的配置（含服务端分配的 ID 和令牌） |
+| `PUT /api/config` | 是 | 整体覆盖 `Config`（各订阅组的 `token` 会被忽略）；返回保存后的配置（含服务端分配的 ID 和令牌）。`revision` 和当前的对不上返回 409 |
 | `POST /api/password` | 是 | `{old, new}` |
 | `POST /api/token` | 是 | `{profile}`，重置该订阅组的令牌，返回新配置 |
+| `PUT /api/config?force=1` | 是 | 同上，但不检查 `revision`（用户确认覆盖别处的修改时用） |
+| `GET /api/history` | 是 | `{items}`，历史版本列表（ID、被替换的时间、当时的订阅组名称、来源数），最新的在前 |
+| `POST /api/history` | 是 | `{id}`，恢复这份历史版本，返回恢复后的配置 |
 | `GET /api/source-status` | 是 | `{来源 ID: {time, error, okTime, count, userinfo}}`，各来源最近一次实际请求上游的结果 |
 | `POST /api/preview` | 是 | `{config, profile, ua, refresh}`：`config` 是前端当前的整份配置，`profile` 是订阅组在其中的下标。不保存。模拟该 UA 的客户端拉取；返回 `{yaml, subs, warnings, total, userinfo}`，`subs` 里有每个来源实际使用的链接和 UA |
 | `GET /api/export[?profile=<id>]` | 是 | 下载整份配置；带 `profile` 时下载该订阅组的分享文件 |
@@ -243,7 +252,7 @@ Config
 
 ## 前端结构（`web/index.html`）
 
-没有框架：`h(tag, attrs, ...kids)` 建元素，`render()` 整页重绘。状态是几个模块级变量：`cfg`（整份配置）、`page`（`group` / `sources` / `templates` / `settings`）、`pi`（当前订阅组下标）、`tab`、`dirty`。
+没有框架：`h(tag, attrs, ...kids)` 建元素，`render()` 整页重绘。状态是几个模块级变量：`cfg`（整份配置）、`page`（`group` / `sources` / `templates` / `settings`）、`pi`（当前订阅组下标）、`tab`、`dirty`，以及不属于配置的 `ruleNames`（规则清单）、`srcStatus`（来源拉取状态）、`snapshots`（历史版本列表）、`previews`（各订阅组最近一次预览）。
 
 - **左栏 `rail()`**：列出所有订阅组，底部是「节点来源」「规则仓库」「模板」「全局设置」「退出登录」
 - **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页，每个对应一个 `tabXxx(p)` 函数，操作当前订阅组 `p`
@@ -256,6 +265,7 @@ Config
 - **`newID()`**：按服务端的格式生成 ID。新建来源和模板时用它，这样不用先保存就能被引用 / 套用；订阅组也一样（预览结果按订阅组 ID 存，没保存的组也要能预览）；令牌始终由服务端发，判断「还没保存过」看 `p.token`
 - **导出导入**：`download(path)` 用 `fetch` 取回再存成文件（不用直接跳转，以免触发「未保存」的离开提示）；`importFile()` 读文件后 POST 给 `/api/import`，整份配置导入前确认。访问记录按订阅组缓存在 `accessLog` 里，进入「本组设置」时加载
 - **来源状态**：`stateTag(s)` / `stateLine(s)` / `trafficOf(s)` 从 `srcStatus` 取数。订阅组里生成过预览的显示预览结果（过滤后用了几个），否则显示来源最近一次拉取上游的结果。`srcStatus` 在启动和每次预览后刷新
+- **保存 `save()`**：409 时询问是否覆盖。**预览**把 `cfg` 整份 POST 过去，不调 `save()`；预览里包含未保存的修改时在结果上方提示
 - **何时调用 `render()`**：结构变化（增删、排序、切换类型导致表单项变化）才重绘；普通文本输入不重绘，否则会丢焦点
 - **`normalize(cfg)`**：从服务端拿到配置后补齐缺失字段。给数据模型加了数组、对象或字符串字段，在这里补默认值
 - **配色**：集中在文件顶部的 CSS 变量（`:root` 与深色模式两组），改主题只改这里
@@ -347,6 +357,8 @@ go vet ./... && gofmt -l .
 - `TestExportImport`：两种导出的内容（分享文件里没有链接和令牌）、单组导入是追加、整份导入保留令牌、旧版 `config.json` 能导入、坏文件不改动现有配置
 - `TestAccessLog` / `TestClientIP`：记录的内容与顺序、新 IP 标记、落盘、上限、随订阅组删除；各种对端地址和转发头组合下取到的 IP
 - `TestSeedTemplatesAreConsistent`：内置策略组模板和规则模板任意组合都没有悬空引用
+- `TestSaveConflict` / `TestHistory`：拿着旧版本号保存被拒绝、`force` 能覆盖；内容有变化才留历史、只留最近 10 份、恢复后内容和令牌回到当时、不认列表之外的 ID
+- `TestPreviewUnsavedAndSourceStatus`：预览按请求里未保存的配置生成且不落盘；来源状态在成功、失败（保留上次成功的信息）、重启后的取值
 - `TestRuleNames` / `TestValidateRuleSources`：两种目录结构下清单的筛选和排序、未保存的来源也能拉、各种失败不动已有清单、限流提示、`GITHUB_TOKEN`、清单落盘和清理；保存配置时规则仓库的规范化和拒绝条件
 
 ## 已知限制

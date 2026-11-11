@@ -83,6 +83,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/password", a.auth(a.handlePassword))
 	mux.HandleFunc("POST /api/token", a.auth(a.handleResetToken))
 	mux.HandleFunc("POST /api/preview", a.auth(a.handlePreview))
+	mux.HandleFunc("GET /api/history", a.auth(a.handleGetHistory))
+	mux.HandleFunc("POST /api/history", a.auth(a.handleRestoreHistory))
 	mux.HandleFunc("GET /api/source-status", a.auth(a.handleSourceStatus))
 	mux.HandleFunc("GET /api/export", a.auth(a.handleExport))
 	mux.HandleFunc("POST /api/import", a.auth(a.handleImport))
@@ -428,12 +430,22 @@ func (a *App) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.saveConfig(w, c)
+	// 前端每次保存都是整份替换，所以要确认它手里的是最新的那份，否则会无声地盖掉别处的修改。
+	// 用户确认要覆盖时带 ?force=1
+	expect := c.Revision
+	if r.URL.Query().Get("force") == "1" {
+		expect = -1
+	}
+	a.saveConfig(w, c, expect)
 }
 
-// saveConfig 保存已校验过的配置并返回给前端，同时清掉已删除订阅组的访问记录。
-func (a *App) saveConfig(w http.ResponseWriter, c Config) {
-	if err := a.store.SetConfig(c); err != nil {
+// saveConfig 保存已校验过的配置并返回给前端，同时清掉已删除订阅组的访问记录。expect 见 Store.SetConfig。
+func (a *App) saveConfig(w http.ResponseWriter, c Config, expect int) {
+	if err := a.store.SetConfig(&c, expect); err != nil {
+		if errors.Is(err, errConflict) {
+			writeErr(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -457,7 +469,7 @@ func (a *App) handleResetToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Token = randHex(16)
-	if err := a.store.SetConfig(c); err != nil {
+	if err := a.store.SetConfig(&c, -1); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

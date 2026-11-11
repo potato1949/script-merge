@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
@@ -163,7 +164,9 @@ type Template struct {
 }
 
 type Config struct {
-	Version        int          `json:"version"`
+	Version int `json:"version"`
+	// Revision 每保存一次加一。前端保存时带回它加载时的值，对不上说明配置已在别处被改过（见 SetConfig）
+	Revision       int          `json:"revision"`
 	Profiles       []Profile    `json:"profiles"`
 	Sources        []Source     `json:"sources"` // 节点来源，被各订阅组引用
 	Templates      []Template   `json:"templates"`
@@ -410,14 +413,31 @@ func (s *Store) Config() Config {
 	return c
 }
 
-func (s *Store) SetConfig(c Config) error {
+// errConflict：保存时带来的版本号和当前的对不上，配置已在别的页面或设备上被修改过。
+var errConflict = errors.New("配置已在别的页面或设备上被修改过")
+
+// SetConfig 保存配置，并把保存后的版本号写回 c.Revision。
+// expect 是调用方加载配置时的版本号，对不上就返回 errConflict 而不保存；传负数表示不检查。
+// 内容有变化时，被替换掉的那份会先存进历史版本（见 history.go）。
+func (s *Store) SetConfig(c *Config, expect int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old := s.data.Config
-	s.data.Config = c
+	if expect >= 0 && expect != old.Revision {
+		return errConflict
+	}
+	c.Revision = old.Revision
+	before, _ := json.Marshal(old)
+	after, _ := json.Marshal(*c)
+	c.Revision++
+	s.data.Config = *c
 	if err := s.save(); err != nil {
 		s.data.Config = old
+		c.Revision = old.Revision
 		return err
+	}
+	if !bytes.Equal(before, after) {
+		s.snapshot(old)
 	}
 	return nil
 }

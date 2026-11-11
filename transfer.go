@@ -160,5 +160,5 @@ func (a *App) handleImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "导入失败："+err.Error())
 		return
 	}
-	a.saveConfig(w, c)
+	a.saveConfig(w, c, -1)
 }

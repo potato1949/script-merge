@@ -84,7 +84,11 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 配置保存与令牌（`main.go`）
 
-前端每次保存都是把整个 `cfg` PUT 回 `/api/config`，没有局部更新接口。`validateConfig` 负责校验和规范化：格式不对或重复的 ID 重新生成（来源的 ID 变了，订阅组里的引用跟着改）；引用了不存在的来源、套用记录指向不存在的模板，都直接去掉；各订阅组的 `Token` 按 ID 找回原值，前端传来的一律忽略，只能通过 `POST /api/token` 重置。
+前端每次保存都是把整个 `cfg` PUT 回 `/api/config`，没有局部更新接口。`Config.Revision` 每保存一次加一，PUT 带回的值和当前的对不上就返回 409（别的页面先保存过），前端询问后带 `?force=1` 覆盖；服务端内部的保存（重置令牌、导入、恢复历史）不检查。`validateConfig` 负责校验和规范化：格式不对或重复的 ID 重新生成（来源的 ID 变了，订阅组里的引用跟着改）；引用了不存在的来源、套用记录指向不存在的模板，都直接去掉；各订阅组的 `Token` 按 ID 找回原值，前端传来的一律忽略，只能通过 `POST /api/token` 重置。
+
+### 历史版本（`history.go`）
+
+`Store.SetConfig` 在内容有变化时把被替换掉的那份存到 `DATA_DIR/history/`，只留最近 `maxHistory`（10）份。`POST /api/history` 恢复某一份，走 `importConfig`（令牌以那份历史为准），当前配置随之成为新的一份历史。界面上的覆盖性操作（套用模板、删除来源、导入）都靠它反悔，所以新增会改配置的服务端入口要走 `SetConfig`。
 
 ### 导出导入（`transfer.go`）与访问记录（`access.go`）
 
@@ -104,7 +108,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 前端（`web/index.html`）
 
-原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`page`、`pi`、`tab`、`dirty`、`ruleNames`）。
+原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`page`、`pi`、`tab`、`dirty`、`ruleNames`、`srcStatus`、`snapshots`）。
 
 - 策略组编辑器 `groupsEditor(o)` 和规则编辑器 `rulesEditor(o)` 接收任何带对应字段的对象，订阅组和模板共用；不要在里面用 `cur()`
 
