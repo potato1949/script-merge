@@ -464,7 +464,7 @@ func TestMigrateLegacyConfig(t *testing.T) {
 			}
 		}
 		if len(c.RuleSources) != len(seedRuleSources()) {
-			t.Errorf("旧配置没有补上内置的规则来源: %+v", c.RuleSources)
+			t.Errorf("旧配置没有补上内置的规则仓库: %+v", c.RuleSources)
 		}
 		last := c.Templates[len(c.Templates)-1]
 		if last.Kind != "parser" || last.Parser != "yaml: {}" {

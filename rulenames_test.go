@@ -41,7 +41,7 @@ func TestRuleNames(t *testing.T) {
 	a, do := newTestApp(t)
 	cfg := a.store.Config()
 	if len(cfg.RuleSources) == 0 {
-		t.Fatal("新配置没有内置的规则来源")
+		t.Fatal("新配置没有内置的规则仓库")
 	}
 	id := cfg.RuleSources[0].ID
 	pull := func(body string) *httptest.ResponseRecorder { return do("POST", "/api/rule-names", body) }
@@ -106,7 +106,7 @@ func TestRuleNames(t *testing.T) {
 	}
 }
 
-// 保存配置时规则来源的校验和规范化
+// 保存配置时规则仓库的校验和规范化
 func TestValidateRuleSources(t *testing.T) {
 	a, do := newTestApp(t)
 	cfg := a.store.Config()
@@ -135,7 +135,7 @@ func TestValidateRuleSources(t *testing.T) {
 	} {
 		cfg.RuleSources = []RuleSource{bad}
 		b, _ = json.Marshal(cfg)
-		if w := do("PUT", "/api/config", string(b)); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "规则来源") {
+		if w := do("PUT", "/api/config", string(b)); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "规则仓库") {
 			t.Errorf("%+v 应被拒绝: %d %s", bad, w.Code, w.Body)
 		}
 	}

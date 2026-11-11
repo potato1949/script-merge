@@ -22,13 +22,13 @@ var githubAPI = "https://api.github.com"
 // maxRuleNames 限制一个来源的规则清单条数，防止填错目录时把一个巨大的列表存下来。
 const maxRuleNames = 20000
 
-// RuleNames 是一个规则来源最近一次拉到的规则清单。
+// RuleNames 是一个规则仓库最近一次拉到的规则清单。
 type RuleNames struct {
 	Names   []string  `json:"names"`
 	Updated time.Time `json:"updated"`
 }
 
-// RuleNameStore 保存各规则来源的规则清单（来源 ID → 清单），存在 DATA_DIR/rulenames.json。
+// RuleNameStore 保存各规则仓库的规则清单（来源 ID → 清单），存在 DATA_DIR/rulenames.json。
 // 清单只在用户手动拉取时更新，不属于配置，不随导出。
 type RuleNameStore struct {
 	mu   sync.Mutex
@@ -77,7 +77,7 @@ func (s *RuleNameStore) Set(id string, l RuleNames, keep map[string]bool) error 
 	return os.Rename(tmp, s.path)
 }
 
-// normalize 校验并规范化一个规则来源，保存配置和拉取清单前都会调用。
+// normalize 校验并规范化一个规则仓库，保存配置和拉取清单前都会调用。
 func (s *RuleSource) normalize() error {
 	for _, f := range []*string{&s.Name, &s.Repo, &s.Ref, &s.Dir, &s.Ext, &s.URL, &s.IPCIDR, &s.Prefix} {
 		*f = strings.TrimSpace(*f)
@@ -135,7 +135,7 @@ func repoPart(s string) bool {
 	return strings.Trim(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.") == ""
 }
 
-// fetchRuleNames 用 GitHub 的目录接口列出规则来源里的全部规则名。
+// fetchRuleNames 用 GitHub 的目录接口列出规则仓库里的全部规则名。
 // 一次请求列一层目录（git/trees/{分支}:{目录}），不递归；和上游订阅一样走环境变量里的代理。
 // 匿名访问按出口 IP 每小时限 60 次，设置环境变量 GITHUB_TOKEN 后改用令牌访问。
 func fetchRuleNames(src RuleSource) ([]string, error) {
@@ -220,15 +220,15 @@ func (a *App) handleGetRuleNames(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.ruleNames.All())
 }
 
-// handlePullRuleNames 拉取一个规则来源的规则清单并存下来。
-// 请求体就是来源本身（而不是 ID），这样在「规则来源」页改了仓库、目录后不用先保存就能拉取。
+// handlePullRuleNames 拉取一个规则仓库的规则清单并存下来。
+// 请求体就是来源本身（而不是 ID），这样在「规则仓库」页改了仓库、目录后不用先保存就能拉取。
 func (a *App) handlePullRuleNames(w http.ResponseWriter, r *http.Request) {
 	var src RuleSource
 	if !readJSON(w, r, &src) {
 		return
 	}
 	if !validID(src.ID) {
-		writeErr(w, http.StatusBadRequest, "规则来源的 ID 无效")
+		writeErr(w, http.StatusBadRequest, "规则仓库的 ID 无效")
 		return
 	}
 	if err := src.normalize(); err != nil {

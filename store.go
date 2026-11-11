@@ -167,7 +167,7 @@ type Config struct {
 	Profiles       []Profile    `json:"profiles"`
 	Sources        []Source     `json:"sources"` // 节点来源，被各订阅组引用
 	Templates      []Template   `json:"templates"`
-	RuleSources    []RuleSource `json:"ruleSources"` // 第三方规则来源，规则编辑器里「从预设添加」用
+	RuleSources    []RuleSource `json:"ruleSources"` // 第三方规则仓库，规则编辑器里「从预设添加」用
 	CacheMinutes   int          `json:"cacheMinutes"`
 	UpdateInterval int          `json:"updateInterval"` // 小时，写入 profile-update-interval
 	BaseConfig     string       `json:"baseConfig"`     // 所有订阅组共用
@@ -195,7 +195,7 @@ type Config struct {
 //	v3：策略组、规则、Parser 都在订阅组内；自定义节点并入订阅源；新增模板
 //	v4：移除按客户端 UA 切换上游链接的「专用链接」，每个订阅只有一个链接；固定 UA 从各订阅挪到全局
 //	v5：节点来源从各订阅组里提出来成为全局对象，订阅组只保留引用和本组的过滤设置
-//	v6：第三方规则来源从前端写死的预设变成配置里的 RuleSources，旧配置补上内置的几个
+//	v6：第三方规则仓库从前端写死的预设变成配置里的 RuleSources，旧配置补上内置的几个
 func (c *Config) migrate() bool {
 	from := c.Version
 	if from >= configVersion {
@@ -571,7 +571,7 @@ func seedTemplates() []Template {
 	}
 }
 
-// seedRuleSources 返回内置的规则来源，和内置模板一样只在新建配置或迁移时写入一次。
+// seedRuleSources 返回内置的规则仓库，和内置模板一样只在新建配置或迁移时写入一次。
 // 置顶的是各仓库里常用的规则，没拉过规则清单时候选列表里就是它们。
 func seedRuleSources() []RuleSource {
 	const raw = "https://raw.githubusercontent.com/"

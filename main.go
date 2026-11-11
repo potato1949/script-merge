@@ -399,10 +399,10 @@ func validateConfig(c *Config, tokens map[string]string) error {
 		s := &c.RuleSources[i]
 		fixID(&s.ID)
 		if err := s.normalize(); err != nil {
-			return errors.New("规则来源「" + s.Name + "」: " + err.Error())
+			return errors.New("规则仓库「" + s.Name + "」: " + err.Error())
 		}
 		if s.Name == "" {
-			s.Name = firstNonEmpty(s.Repo, "规则来源 "+strconv.Itoa(i+1))
+			s.Name = firstNonEmpty(s.Repo, "规则仓库 "+strconv.Itoa(i+1))
 		}
 	}
 	if c.CacheMinutes < 0 {
