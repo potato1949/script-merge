@@ -47,9 +47,9 @@ Config
 │    └─ Kind = manual：Nodes（YAML 或分享链接文本）
 ├─ Profiles[]              订阅组
 │   ├─ ID / Name / Token / FileName
-│   ├─ Sources[]           对节点来源的引用（SourceRef）：Source（来源 ID）、Enabled、Prefix、Include、Exclude、Dialer（前置代理）
+│   ├─ Sources[]           对节点来源的引用（SourceRef）：Source（来源 ID）、Enabled、Prefix、Include、Exclude、Dialer（前置代理）、Follow（沿用机场的策略组和规则）
 │   ├─ Groups[]            策略组
-│   ├─ Rules               RulesBefore / RuleSets[] / RulesAfter（内嵌结构体）
+│   ├─ Rules               RulesBefore / RuleSets[]（名称、地址、策略、启用）/ RulesAfter（内嵌结构体）
 │   ├─ Parser
 │   └─ Applied             模板类型 → {最近一次套用的模板 ID, 当时的内容摘要}
 ├─ Templates[]             模板：Kind = groups / rules / parser，带对应那部分内容
@@ -62,7 +62,7 @@ Config
 
 **模板是复制语义**：套用模板 = 把模板内容复制进订阅组，之后两者互不影响。所以服务端只负责保存 `Templates`，「套用」是前端对 `cfg` 对象的操作（`applyTemplate`，`KINDS[kind].fields` 列出了复制哪些字段），`Build` 完全不知道模板的存在。模板只在「模板」页新建和编辑（三类都能从空白新建），订阅组里没有「存为模板」。内置模板（`seedTemplates`）只在新建配置或迁移时写入一次，之后和用户自建的没有区别，可以改、可以删。
 
-内置的两套策略组模板和两套规则模板共用同一批策略组名（`gProxy` 等常量），所以可以任意组合；`TestSeedTemplatesAreConsistent` 保证这一点。新增内置模板时沿用这些名字。
+内置的两套策略组模板和规则模板共用同一批策略组名（`gProxy` 等常量），所以可以任意组合；`TestSeedTemplatesAreConsistent` 保证这一点。新增内置模板时沿用这些名字。
 
 ### 模板与订阅组的差异提示
 
@@ -90,11 +90,12 @@ Config
 ```
 基础配置 (cfg.BaseConfig) → root map
   1. 并发处理本组所有启用的来源引用（按引用的来源 ID 在 cfg.Sources 里找到来源）
-       remote：resolveUA 决定 UA → Fetcher.Get → parseSubscription
+       remote：resolveUA 决定 UA → Fetcher.Get → parseSubscription（节点之外还取出 hosts、fake-ip-filter、策略组、规则、rule-providers）
        manual：parseCustomProxies 解析 Nodes
   2. 汇总节点        按引用上的 Include/Exclude 过滤 → 加 Prefix → 重名加序号 → 引用上有 Dialer 的写上 dialer-proxy
-  3. 生成策略组      Extra（固定成员）在前，按 Nodes 模式追加节点
-  4. 生成规则        RulesBefore → 每个 RuleSet 一条 RULE-SET → RulesAfter
+                     → 顺着节点的 server 找出要用的上游 hosts / fake-ip-filter，合并进 root（nodeHosts）
+  3. 生成策略组      先是 Follow 的引用沿用的机场策略组（followGroups），再是本组自己的：Extra（固定成员）在前，按 Nodes 模式追加节点
+  4. 生成规则        RulesBefore → 规则集展开 → Follow 的机场规则（其中的 RULE-SET 展开）→ RulesAfter，去掉排在后面的重复规则（buildRules）
   5. ApplyParser     本组 Parser 对 root 做最终修改
   6. validate        检查引用了不存在的策略 / 成员 / 前置代理、前置代理成环，只产生警告
   7. toNode + 编码   输出键顺序稳定的 YAML
@@ -109,6 +110,36 @@ Config
 `BuildResult.Subs` 里每个启用的引用一条状态（`SubStatus`）：`Index` 是引用在订阅组 `Sources` 里的下标，`ID` 是来源 ID。同一个来源可能被引用多次，所以前端用「下标 + 来源 ID」对应到行上。
 
 内存中的配置树统一使用 `map[string]any` / `[]any`（不是 `[]map[string]any` 或 `[]string`），因为 Parser 的路径命令要对任意位置做通用遍历。往 `root` 里放数据时请保持这个约定，否则 `applyPath` 和 `toNode` 不认识。
+
+### 节点地址解析用的 hosts（`upstream.go` 的 `nodeHosts`）
+
+有的机场让节点的 `server` 经 `hosts` 映射到另一个域名（可能不止一层），再把这些域名放进 `dns.fake-ip-filter`。只合并节点时这层映射丢了，节点会连不上。所以 `Build` 从实际用到的节点（过滤之后）的 `server` 出发，顺着上游的 `hosts` 一层层找下去（键支持 `+.` / `.` / `*` 通配），把沿途用到的 hosts 条目，以及能匹配到这些域名的 fake-ip-filter 条目，合并进输出。和节点无关的（`*.lan`、`time.*.com` 之类）不带。
+
+- 自动进行，不需要配置；`SubStatus.Hosts` 记带过来的条数
+- 基础配置里已有同名 hosts 的，以基础配置为准并警告
+- fake-ip-filter 只在基础配置有 `dns` 段、且 `fake-ip-filter-mode` 不是 `whitelist` 时追加（白名单模式下追加会把意思弄反）
+- 机场的 `nameserver-policy` 等其他 DNS 设置不带
+
+### 沿用机场的策略组和规则（`SourceRef.Follow`）
+
+引用上勾了 `Follow`，每次生成时取这个来源（必须是 Clash 配置）最新的策略组和规则，是「引用语义」：机场改了规则，订阅跟着变；用户不能逐条改，只能在前后加自己的规则覆盖。它属于引用而不是来源，不进缓存键（缓存里本来就存着上游的策略组和规则）。
+
+- **策略组**（`followGroups`）：排在本组自己的策略组前面；和本组策略组重名的不带（本组的优先，并警告）。成员里的节点名换成本组输出里的名字（加前缀、去重名后的，按引用记下的 `renames`），被过滤掉的节点去掉。某个组包含了上游的全部节点时，当它是「全部节点」，本组其他来源的节点也加进去；只含部分节点的（按地区分的）只换名字。节点都被过滤掉的组填 `DIRECT` 并警告。用到 `use`（机场的 proxy-providers）的部分去掉并警告
+- **规则**：排在本组规则集之后、后置规则之前。其中的 `RULE-SET` 按机场的 `rule-providers` 展开：`http` 类型的下载地址，`inline` 的直接用 `payload`，`file` 类型和 mrs 展开不了，跳过并警告；`SUB-RULE` 跳过。机场规则以 `MATCH` 结尾而本组还有后置规则时警告后置规则不会生效
+- 前端用 `GET /api/source-status` 里来源最近一次成功拉取时记下的策略组名（`SourceState.Groups`），在策略组页、规则页给出说明，并把这些名字加进规则的策略候选
+
+### 规则集的平铺（`ruleset.go`）
+
+规则集不再输出成 `rule-providers`，而是生成订阅时由服务端下载规则文件，展开成带策略的普通规则写进 `rules`，和机场的配置一样是平铺的。这样客户端不用自己去 GitHub 下载（国内经常失败），规则集是什么类型、什么格式、要不要 no-resolve 也都不用用户选。所以 `RuleSet` 只有名称、地址、策略、启用。
+
+- **解析**（`parseRuleFile` / `normRule`）：YAML 取 `payload` 列表，否则按行（`#`、`//` 是注释）。每一项按内容判断：带逗号的是完整规则（类型要在 `ruleTypes` 白名单里，IP 段、正则会校验）；能解析成 IP 段或 IP 的是 `IP-CIDR` / `IP-CIDR6`；其余当域名：`+.a.com` → `DOMAIN-SUFFIX`，`.a.com` 也按后缀（平铺后没有「只匹配子域名」的写法，多匹配了它自己），带 `*` 的 → `DOMAIN-REGEX`，其他 → `DOMAIN`。认不出的行跳过并计数——平铺之后一条认不出的规则会让客户端整个配置加载失败，而在 rule-provider 里它只是被忽略
+- **展开**（`withPolicy`）：在类型和内容后面加上策略；IP 类规则（`IP-CIDR`、`IP-CIDR6`、`IP-SUFFIX`、`IP-ASN`、`GEOIP`）一律加 `no-resolve`，因为规则集都排在兜底规则之前
+- **去重**（`ruleList`）：按「类型 + 内容」去掉排在后面的重复规则（它们永远匹配不到），覆盖前置规则、规则集、机场规则、后置规则全部
+- **mrs 不支持**：二进制格式展开不了，地址以 `.mrs` 结尾或内容是二进制的直接报错
+- **缓存**（`RuleFetcher`）：按地址缓存，一天有效（`ruleTTL`），内存 + `DATA_DIR/rulecache/<sha256 前缀>.json`（存解析后的规则，磁盘上的用到时才读入内存）。失败 5 分钟内不重试，失败时用旧缓存并警告。`?refresh=1` 不影响规则文件。下载并发 8 个，走环境变量里的代理；测试里换掉 `ruleDownload`，不访问外网
+- 规则总数超过 `ruleWarnTotal`（5 万）时警告。MetaCubeX 的 geosite-cn、blackmatrix7 的 ChinaMax 这类规则集一个就有十万条以上，平铺后配置有好几 MB；Loyalsoldier 的规则集也是这个量级，所以不再内置
+- 预览里列出每个规则集的条数、跳过的行数和错误（`BuildResult.RuleSets`）
+- 基础配置或 Parser 里自己写的 `rule-providers` 照常输出，不受影响
 
 ### 拉取上游用的 UA（`resolveUA`）
 
@@ -131,7 +162,8 @@ Config
 - 缓存经过 JSON 往返后整数会变成 `float64`，`toNode` 会把整数值的 float 还原成整数输出
 - 来源 ID 被用作缓存文件名，所以 `validateConfig` 只接受 16 位十六进制且全局唯一的 ID，其他一律由服务端重新生成（防路径穿越）。来源的 ID 被重新生成时，订阅组里指向旧 ID 的引用会跟着改
 - **代理**：只走环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`，不做界面配置，也不按来源单独配置。`fetchSubscription` 的 `http.Client` 没有自定义 `Transport`，落在 `http.DefaultTransport` 上，它本身就读这几个变量（也支持 `socks5://`），订阅请求和解锁请求都经过它。启动时 `proxySummary` 把生效的代理打进日志（代理地址里的密码会被隐去）。**以后给拉取换了自定义 `Transport`，要带上 `Proxy: http.ProxyFromEnvironment`**，否则代理静默失效——`TestFetchUsesProxy` 会发现。两个标准库的行为要知道：回环地址（`localhost`、`127.0.0.1`）永远不走代理；环境变量只在进程第一次发请求时读一次，所以测试是在 `TestMain` 里设置的，且用一个不存在的域名当上游
-- 订阅内容解析顺序：Clash YAML（有 `proxies`）→ base64 解码后的分享链接 → 明文分享链接
+- 订阅内容解析顺序：Clash YAML（有 `proxies`）→ base64 解码后的分享链接 → 明文分享链接。Clash YAML 按通用的 map 解析再逐项取（`upstream` 结构），某一部分写法不规范只丢那一部分，不影响节点
+- 缓存内容有格式版本（`cacheFormat`）：加了要缓存的上游字段就加一，旧格式的缓存视为已过期（拉取失败时仍可作为旧缓存用）
 
 ### 输出 YAML（`toNode`）
 
@@ -159,7 +191,7 @@ Config
 
 **历史版本**（`history.go`）：`SetConfig` 在内容有变化时把被替换掉的那份写到 `DATA_DIR/history/<时间>-<版本号>.json`，只留最近 `maxHistory`（10）份；内容没变的保存不留。`POST /api/history {id}` 恢复某一份，和整份导入走同一个 `importConfig`（会迁移、校验，令牌以那份历史为准），恢复前的配置随之成为新的一份历史，所以恢复也能撤销。历史文件里有订阅链接和令牌，权限同 `config.json`。
 
-`DATA_DIR/access.json`：各订阅链接的访问记录，见「访问记录」。`DATA_DIR/cache/`：上游缓存。`DATA_DIR/rulenames.json`：各规则仓库的规则清单，见「规则仓库」。这三处都不属于配置，删掉只是丢历史 / 重新拉取。
+`DATA_DIR/access.json`：各订阅链接的访问记录，见「访问记录」。`DATA_DIR/cache/`：上游缓存。`DATA_DIR/rulecache/`：规则集的规则文件缓存，见「规则集的平铺」。`DATA_DIR/rulenames.json`：各规则仓库的规则清单，见「规则仓库」。这几处都不属于配置，删掉只是丢历史 / 重新拉取。
 
 ### 迁移
 
@@ -172,9 +204,10 @@ Config
 | v3 | 策略组、规则、Parser 都在订阅组内；订阅带「专用链接」（`variants`，按客户端 UA 切换上游链接）和各自的固定 UA（`userAgent`） | 移除专用链接：默认链接为空的订阅改用第一条有链接的专用链接，其余专用链接丢弃。固定 UA 挪到全局：取第一个填了 UA 的订阅的值（与内置默认值相同则留空），其余丢弃 |
 | v4 | 订阅（`subscriptions`）存在各订阅组里，来源本身和使用设置混在一个对象上 | 每条订阅拆成全局来源 + 订阅组里的引用（`splitSubscription`）。内容完全相同的来源合并成一个（远程：链接 + UA 模式 + 解锁地址；手动：节点文本），名称和 ID 取第一次出现的，这样原有缓存继续有效；没填链接 / 节点的不合并。前缀、过滤、是否启用留在各组的引用上 |
 | v5 | 没有 `ruleSources`，规则仓库是前端里写死的预设 | 写入内置的规则仓库（`seedRuleSources`）。原有的规则集不动 |
-| v6 | 当前结构 | |
+| v6 | 规则集输出为 rule-provider，带 `behavior` / `format` / `noResolve`；规则仓库带类型、格式、ipcidr 正则 | 旧数据不细致迁移，有问题的直接清掉（用户确认的取舍）：规则仓库换成新的内置列表；mrs 和 Loyalsoldier 的规则集从订阅组里去掉，含有它们的规则模板整个去掉；规则模板的套用记录清空；旧字段直接丢弃 |
+| v7 | 当前结构 | |
 
-旧字段以 `Legacy*` 命名、`omitempty` 保留在结构体里，只用于读取旧文件。以后改结构：`configVersion` 加一，在 `migrate` 里加一段（每一段只在 `from` 低于对应版本时执行），并在 `TestMigrateLegacyConfig` 补一个旧文件样例。导入功能复用同一个 `migrate`，所以旧版本导出的文件、旧的 `config.json` 都能导入。
+旧字段以 `Legacy*` 命名、`omitempty` 保留在结构体里，只用于读取旧文件。用户明确表示过旧数据不需要细致迁移，有问题的直接清掉就好（v7 就是这样做的），所以以后改结构时不必为保住旧数据写复杂的转换。改结构：`configVersion` 加一，在 `migrate` 里加一段（每一段只在 `from` 低于对应版本时执行），并在 `TestMigrateLegacyConfig` 补一个旧文件样例。导入功能复用同一个 `migrate`，所以旧版本导出的文件、旧的 `config.json` 都能导入。
 
 只是**加字段**不需要迁移：旧文件里没有这个字段，读出来是零值，所以零值必须是合理的默认行为（或在 `validateConfig` / 使用处兜底）。例如 `UAMode` 为空等同于 `fixed`，`Kind` 为空等同于 `remote`，`Applied` 为空就是没有差异提示。
 
@@ -207,14 +240,14 @@ Config
 
 ## 规则仓库（`rulenames.go`）
 
-规则仓库（`Config.RuleSources`）是「第三方规则仓库」的描述，只服务于规则编辑器里的「从来源添加」：选一个来源、填一个规则名，前端的 `ruleSetFrom` 按来源的设置拼出一条 `RuleSet`（地址模板里的 `{name}` 换成规则名，名称加前缀，规则名匹配 `IPCIDR` 正则时类型改成 ipcidr）。**这是复制语义**，和模板一样：加进订阅组或模板的规则集和来源再无关系，`Build` 不读 `RuleSources`，改、删来源不影响已有的规则集。
+规则仓库（`Config.RuleSources`）是「第三方规则仓库」的描述，只服务于规则编辑器里的「从规则仓库添加」：在对话框（`ruleSetDialog`）里跨仓库多选规则名、统一指定一个策略，前端的 `ruleSetFrom` 对每一条按来源的设置拼出一条 `RuleSet`（地址模板里的 `{name}` 换成规则名，名称加前缀）。**这是复制语义**，和模板一样：加进订阅组或模板的规则集和来源再无关系，`Build` 不读 `RuleSources`，改、删来源不影响已有的规则集。
 
 一个来源分两部分：
 
 - **清单从哪里列**：`Repo`（GitHub 的 owner/repo）、`Ref`（分支）、`Dir`（目录）、`Layout`（`file`：目录下每个文件一条规则，按 `Ext` 筛选并去掉扩展名；`dir`：每个子目录一条规则，blackmatrix7 是这种）。`Repo` 为空表示不拉清单
-- **规则集怎么填**：`URL`（地址模板）、`Behavior`、`IPCIDR`、`Format`、`Prefix`
+- **规则集怎么填**：`URL`（地址模板）、`Prefix`。类型、格式不用填，生成时按文件内容判断（见「规则集的平铺」）
 
-`Pinned` 是置顶的规则名，候选列表里排在最前面；没拉过清单时候选里只有它们。内置的五个来源（`seedRuleSources`）把各仓库的常用规则预先置顶，和内置模板一样只在新建配置或迁移时写入一次。
+`Pinned` 是置顶的规则名，在对话框和「规则仓库」页的列表里排在最前面；没拉过清单时列表里只有它们。对话框里也可以输入清单里没有的名字（提示「清单里没有」或「未核对」），以及把选中的规则顺手置顶。是否已添加按拼出的地址判断，不按名称。内置的四个来源（`seedRuleSources`：blackmatrix7、ACL4SSR、MetaCubeX geosite / geoip 的 .list 文本版）把各仓库的常用规则预先置顶，和内置模板一样只在新建配置或迁移时写入一次。
 
 **规则清单**（仓库里有哪些规则名）不属于配置，存在 `DATA_DIR/rulenames.json`（来源 ID → 名字列表 + 拉取时间），不随导出。它**只在用户点「拉取」时更新**，没有定时任务，`Build` 也不触发。拉取是对 GitHub 接口的一次请求：`GET /repos/{repo}/git/trees/{ref}:{dir}`，列一层目录、不递归（用 git/trees 而不是 contents 接口，是因为后者一个目录最多返回 1000 条，MetaCubeX 的 geosite 目录有六千多个文件）。请求用默认的 `http.Client`，所以和上游订阅一样走环境变量里的代理。
 
@@ -318,7 +351,7 @@ Config
 
 **加一个 User-Agent 预设**：`web/index.html` 的 `UA_PRESETS` 加一行。后端不校验 UA，任意字符串都行。
 
-**加一个规则源预设**：`web/index.html` 的 `RULE_SOURCES` 加一项（`url` 模板、`format`、`behavior`、`id` 前缀、`names` 候选）。预设只是帮用户填表，最终存的是普通 `RuleSet`，后端无需改动。
+**加一个内置规则仓库**：`store.go` 的 `seedRuleSources` 加一项。和内置模板一样只对新安装和迁移生效，已有用户在「规则仓库」页自己添加。
 
 **加一套内置模板**：`store.go` 的 `seedTemplates` 加一项。注意它只对新安装和迁移生效，已有用户不会自动得到。
 
@@ -328,7 +361,7 @@ Config
 
 **支持新的订阅格式**（如 sing-box JSON）：在 `fetch.go` 的 `parseSubscription` 里加一个分支，产出 `[]map[string]any`（Clash 节点格式）即可，下游不用动。
 
-**加一种节点来源**（比如本地文件）：`Source.Kind` 加新值，`Build` 第 1 步的 goroutine 里加分支产出 `cacheEntry{Proxies: ...}`，`validateConfig` 里做对应校验，前端 `sourceFields` 加表单，`sourcesPage` 加「添加」按钮，`sourceSummary` 加只读概述；`exportProfile` 里把新类型里能拿到节点的字段也去掉。
+**加一种节点来源**（比如本地文件）：`Source.Kind` 加新值，`Build` 第 1 步的 goroutine 里加分支产出 `cacheEntry{upstream: upstream{Proxies: ...}}`，`validateConfig` 里做对应校验，前端 `sourceFields` 加表单，`sourcesPage` 加「添加」按钮，`sourceSummary` 加只读概述；`exportProfile` 里把新类型里能拿到节点的字段也去掉。
 
 **解锁步骤要更复杂**（POST、自定义 Header、多步）：改 `fetchSubscription`。给 `Source` 加影响拉取结果的字段后，记得把它加进 `cacheKey`，否则改了配置缓存不会失效。
 
@@ -379,8 +412,8 @@ go vet ./... && gofmt -l .
 - 访问记录的 IP 依赖反向代理正确追加 `X-Forwarded-For`；前面有公网 CDN 时记到的是 CDN 地址
 - 代理只能通过环境变量配置，所有来源共用，改了要重启服务
 - 会话存内存，重启即失效；不支持多实例共享
-- 规则集只是生成 `rule-providers` 让客户端自己下载，服务端不下载也不校验规则 URL 是否有效
-- 规则清单只能从 GitHub 仓库拉，且只列一层目录；清单不会自动更新。规则仓库里「规则名匹配此正则时按 ipcidr」用的是浏览器的正则，不走 `compileRegex`
-- `text` / `mrs` 格式的规则集和部分节点类型需要 mihomo（Clash Meta）内核，原版 Clash 不支持
+- 规则集全部平铺，没有「大规则集改用 rule-provider」的折中：MetaCubeX 的 geosite-cn、blackmatrix7 的 ChinaMax 这类规则集一个就有十万条以上，加了配置会很大（只在预览里警告）
+- 规则清单只能从 GitHub 仓库拉，且只列一层目录；清单不会自动更新
+- 部分节点类型、规则类型（`DOMAIN-REGEX`、`IP-ASN` 等，规则集展开后会出现）需要 mihomo（Clash Meta）内核，原版 Clash 不支持。规则集不支持 mrs 格式
 - `validate` 不解析逻辑规则（`AND` / `OR` / `NOT`）里的策略名
 - 服务端会访问管理员填写的任意 http(s) 地址（订阅、解锁地址），没有内网地址限制；管理密码泄露等同于可从服务器发起请求

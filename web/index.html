@@ -94,6 +94,9 @@ main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .chips.names button { font-family: var(--mono); }
 .chips.names .pinned { background: var(--accent-soft); border-color: var(--accent); }
 .chips.names .gone { text-decoration: line-through; }
+.policy { display: flex; gap: 4px; align-items: center; }
+.policy select, .policy input { flex: 1; min-width: 0; }
+.chips.names .sel { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .chips.names .more { font-size: 12.5px; color: var(--muted); }
 .section-head { display: flex; align-items: center; gap: 10px; margin: 26px 0 10px; }
 .section-head .section-title { margin: 0 auto 0 0; }
@@ -135,6 +138,8 @@ button:disabled { opacity: .4; cursor: default; }
 .tag.err { color: var(--danger); background: var(--accent-soft); }
 .warnbox { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 9px 13px; margin-bottom: 12px; font-size: 13px; }
 .warnbox div + div { margin-top: 3px; }
+.infobox { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 9px 13px; margin-bottom: 14px; font-size: 13px; }
+.infobox div + div { margin-top: 4px; }
 pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; max-height: 62vh; font: 12.5px/1.6 var(--mono); margin: 0; }
 .tblwrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; min-width: 820px; }
@@ -356,7 +361,44 @@ function listButtons(list, i, remove) {
 }
 const datalist = (id, values) => h('datalist', { id }, values.map(v => h('option', { value: v })));
 // 规则里「策略」输入框的候选：o 是订阅组时先列它的策略组；规则模板没有策略组可取，只列已经用到的策略，其余自由输入
-const policyNames = o => [...new Set([...o.groups.map(g => g.name), ...o.ruleSets.map(r => r.policy), 'DIRECT', 'REJECT'].filter(Boolean))];
+// 订阅组沿用了哪些机场的策略组和规则：[{ s: 来源, st: 来源最近一次拉取的结果（带机场的策略组名和规则条数，没拉过为空） }]
+const followsOf = o => (o.sources || []).filter(r => r.enabled && r.follow).map(r => ({ s: srcOf(r.source), st: srcStatus[r.source] })).filter(x => x.s && x.s.kind !== 'manual');
+// 规则里「策略」的候选。o 是订阅组时是它自己的和沿用的机场策略组；规则模板自己没有策略组，列出各策略组模板里的策略组名和已经用到的策略
+const policyNames = o => [...new Set([
+  ...(o.kind ? [...cfg.templates.filter(t => t.kind === 'groups').flatMap(t => t.groups), ...o.ruleSets.map(r => ({ name: r.policy }))]
+    : [...o.groups, ...followsOf(o).flatMap(x => (x.st?.groups || []).map(name => ({ name })))]).map(g => g.name.trim()),
+  'DIRECT', 'REJECT'].filter(Boolean))];
+// 沿用机场策略组 / 规则的说明，放在策略组页和规则页的顶部
+function followNote(p, kind) {
+  const list = followsOf(p);
+  if (list.length === 0) return null;
+  return h('div', { class: 'infobox' }, list.map(({ s, st }) => h('div', {}, kind === 'groups'
+    ? `沿用「${s.name}」的策略组，排在下面这些策略组前面，重名的以下面的为准。` + (st?.groups?.length ? `共 ${st.groups.length} 个：${st.groups.join('、')}。` : '还没拉取过，生成一次预览后这里会列出它们。')
+    : `沿用「${s.name}」的规则，排在规则集之后、后置规则之前。` + (st?.rules ? `共 ${st.rules} 条（RULE-SET 展开前），` : '') + '机场的规则一般以 MATCH 结尾，那样后置规则就不会生效。')));
+}
+// 策略选择：下拉选候选里的；最后一项「其他」切换成文本框手填，↩ 切回下拉。
+// 当前值不在候选里时也作为一项列出；给了 o.missing 时加上 ⚠ 和这段说明（订阅组里用来标出不存在的策略组，⚠ 在前面，单元格窄被截断也看得到）
+function policyField(obj, key, names, o = {}) {
+  const wrap = h('span', { class: 'policy' });
+  const set = v => { obj[key] = v; if (!o.local) markDirty(); if (o.onchange) o.onchange(v); };
+  const pick = () => {
+    const v = obj[key] || '';
+    const opts = [...names.map(n => [n, n]), ...(v && !names.includes(v) ? [[v, o.missing ? `⚠ ${v}${o.missing}` : v]] : [])];
+    const sel = h('select', { 'aria-label': '策略', onchange: e => e.target.selectedIndex === opts.length ? typing() : set(e.target.value) },
+      opts.map(([val, t]) => h('option', { value: val }, t)), h('option', { value: '' }, '其他（手动输入）…'));
+    sel.value = v;
+    if (!v) sel.selectedIndex = -1;
+    wrap.replaceChildren(sel);
+  };
+  const typing = () => {
+    const input = h('input', { type: 'text', placeholder: '策略名', spellcheck: 'false', 'aria-label': '策略', oninput: e => set(e.target.value) });
+    input.value = obj[key] || '';
+    wrap.replaceChildren(input, h('button', { class: 'sm', title: '改回从列表里选', 'aria-label': '改回从列表里选', onclick: pick }, '↩'));
+    input.focus(); input.select();
+  };
+  pick();
+  return wrap;
+}
 const empty = (title, text) => h('div', { class: 'empty' }, h('b', {}, title), text);
 
 // 可展开的行。o: { name, lead, chips, status, controls, off, body(nameEl) }
@@ -391,7 +433,7 @@ function dialog(title, build, actions) {
 // 补齐旧数据里缺失的字段，并保证当前选中的订阅组存在
 function normalize(c) {
   c.revision ||= 0; c.templates ||= []; c.sources ||= []; c.ruleSources ||= []; c.userAgent ||= ''; c.unlockUserAgent ||= '';
-  for (const s of c.ruleSources) { s.pinned ||= []; for (const k of ['name', 'repo', 'ref', 'dir', 'ext', 'url', 'ipcidr', 'prefix']) s[k] ||= ''; s.layout ||= 'file'; s.behavior ||= 'classical'; s.format ||= 'yaml'; }
+  for (const s of c.ruleSources) { s.pinned ||= []; for (const k of ['name', 'repo', 'ref', 'dir', 'ext', 'url', 'prefix']) s[k] ||= ''; s.layout ||= 'file'; }
   for (const t of [...c.profiles, ...c.templates]) { t.groups ||= []; t.ruleSets ||= []; t.rulesBefore ||= ''; t.rulesAfter ||= ''; t.parser ||= ''; }
   for (const s of c.sources) { s.kind ||= 'remote'; s.uaMode ||= 'fixed'; s.nodes ||= ''; s.url ||= ''; s.unlockUrl ||= ''; }
   const ids = new Set(c.sources.map(s => s.id));
@@ -563,7 +605,7 @@ function tabSubs(p) {
         return item(r, {
           name: s.name, off: !r.enabled,
           lead: field('', r, 'enabled', { type: 'checkbox', aria: '启用', onchange: render }),
-          chips: [...sourceChips(s), r.dialer && `经由 ${r.dialer}`, others.length > 0 && `${others.length + 1} 个订阅组共用`],
+          chips: [...sourceChips(s), r.dialer && `经由 ${r.dialer}`, r.follow && s.kind !== 'manual' && '沿用策略组和规则', others.length > 0 && `${others.length + 1} 个订阅组共用`],
           // 生成过预览就显示本组的结果（过滤后用了几个），否则显示来源最近一次拉取上游的结果
           status: !st ? stateTag(s) : (st.error ? h('span', { class: 'tag err', title: st.error }, (st.stale ? `失败，用缓存 ${st.used} 个：` : '失败：') + st.error)
             : h('span', { class: 'tag ok' }, `${st.used} / ${st.count} 个节点`)),
@@ -579,6 +621,11 @@ function tabSubs(p) {
               field('排除匹配的节点（正则，可选）', r, 'exclude', { placeholder: '例：过期|剩余|官网' }),
               field('前置代理（代理链，可选）', r, 'dialer', { placeholder: '策略组名或节点名', list: dialerList })),
             h('p', { class: 'hint' }, '填了前置代理，这里的节点都会先经过它再连出去（输出为 dialer-proxy，需要 mihomo 内核）。典型用法：自建的落地节点填一个只含机场节点的策略组。该策略组里不要包含这些落地节点本身。'),
+            s.kind !== 'manual' && [
+              // 每个订阅组只能沿用一个机场：勾上这个就取消其他的
+              field('沿用这个机场的策略组和规则', r, 'follow', { type: 'checkbox', onchange: v => { if (v) for (const x of p.sources) if (x !== r) x.follow = false; render(); } }),
+              h('p', { class: 'hint', style: 'margin-top:6px' }, '每个订阅组只能沿用一个机场，勾选这里会取消其他来源的勾选。勾选后，每次生成订阅时取机场配置里最新的策略组和规则（机场给的是 Clash 配置时才有）。策略组排在本组自己的策略组前面，里面的节点名换成本组里的名字；包含机场全部节点的组，还会加上本组其他来源的节点。规则排在本组的规则集之后、后置规则之前。'),
+            ],
           ],
         });
       })),
@@ -732,44 +779,29 @@ function groupsEditor(o, emptyText) {
 function tabGroups(p) {
   return [
     toolbar('策略组按列表顺序输出。「固定成员」可填其他策略组名、DIRECT、REJECT 或具体节点名，排在节点之前。策略组改名时，本组的规则、其他策略组的固定成员和前置代理里引用它的地方会一起改。', 'groups', p),
+    followNote(p, 'groups'),
     groupsEditor(p, '套用一个模板，或从空白开始添加。'),
   ];
 }
 
 // 规则编辑器。o 是任何带 rulesBefore / ruleSets / rulesAfter 字段的对象：订阅组或规则模板
 function rulesEditor(o) {
-  const policies = policyNames(o), policyList = nextId('policies'), nameListId = nextId('rsnames');
-  const srcs = cfg.ruleSources, picked = () => srcs.find(s => s.id === add.src);
-  const add = { src: (srcs.find(s => s.id === ui.ruleSrc) || srcs[0])?.id, name: '', policy: policies[0] };
-  const nameList = datalist(nameListId, srcs.length ? ruleChoices(picked()) : []);
-  const addSet = () => {
-    const n = add.name.trim();
-    if (!n) return toast('请填写规则名称');
-    o.ruleSets.push(ruleSetFrom(picked(), n, add.policy)); markDirty(); render();
-  };
+  const policies = policyNames(o), missing = o.kind ? '' : '（本组没有）';
   return [
-    datalist(policyList, policies),
     h('div', { class: 'card' }, h('h3', {}, '前置规则'), h('p', { class: 'hint' }, '每行一条，例：DOMAIN-SUFFIX,example.com,DIRECT'),
       field('', o, 'rulesBefore', { type: 'textarea', rows: 4 })),
     h('div', { class: 'card' }, h('h3', {}, '第三方规则集'),
-      h('p', { class: 'hint' }, '以 rule-providers 方式输出，由客户端自行下载更新。可以从规则仓库里选一条规则快速添加（规则名可以直接输入，候选里置顶的排在前面），也可以手填任意规则 URL。来源和它们的规则清单在「规则仓库」页管理。'),
-      h('div', { class: 'row', style: 'margin-bottom:10px' }, nameList,
-        srcs.length > 0 && [
-          h('div', { style: 'flex:2 1 220px' }, field('', add, 'src', { local: true, options: srcs.map(s => [s.id, s.name || '(未命名)']), onchange: v => { ui.ruleSrc = v; nameList.replaceChildren(...ruleChoices(picked()).map(n => h('option', { value: n }))); } })),
-          h('div', { style: 'flex:1 1 140px' }, field('', add, 'name', { local: true, list: nameListId, placeholder: '规则名，如 OpenAI' })),
-          h('div', { style: 'flex:1 1 140px' }, field('', add, 'policy', { local: true, list: policyList, placeholder: '策略' })),
-          h('button', { onclick: addSet }, '+ 从来源添加')],
-        h('button', { onclick: () => { o.ruleSets.push({ name: '', url: '', behavior: 'classical', format: 'yaml', policy: policies[0], noResolve: false, enabled: true }); markDirty(); render(); } }, '+ 手动添加')),
+      h('p', { class: 'hint' }, '生成订阅时由服务端下载规则文件（缓存一天），逐条展开写进配置，和机场的配置一样是平铺的规则；文件里每行是什么类型按内容判断，IP 规则自动加 no-resolve。可以从规则仓库里挑选规则批量添加，也可以手填任意规则文件的地址（不支持 mrs 格式）。规则仓库在「规则仓库」页管理。'),
+      h('div', { class: 'row', style: 'margin-bottom:10px' },
+        h('button', { onclick: () => ruleSetDialog(o) }, '+ 从规则仓库添加'),
+        h('button', { onclick: () => { o.ruleSets.push({ name: '', url: '', policy: policies[0], enabled: true }); markDirty(); render(); } }, '+ 手动添加')),
       o.ruleSets.length > 0 && h('div', { class: 'tblwrap' }, h('table', {},
-        h('tr', {}, ['启用', '名称', 'URL', '类型', '格式', '策略', 'no-resolve', ''].map(t => h('th', {}, t))),
+        h('tr', {}, ['启用', '名称', '规则文件地址', '策略', ''].map(t => h('th', {}, t))),
         o.ruleSets.map((r, i) => h('tr', {},
-          h('td', {}, field('', r, 'enabled', { type: 'checkbox', aria: '启用' })),
-          h('td', { style: 'width:130px' }, field('', r, 'name')),
-          h('td', {}, field('', r, 'url')),
-          h('td', { style: 'width:105px' }, field('', r, 'behavior', { options: [['classical', 'classical'], ['domain', 'domain'], ['ipcidr', 'ipcidr']] })),
-          h('td', { style: 'width:80px' }, field('', r, 'format', { options: [['yaml', 'yaml'], ['text', 'text'], ['mrs', 'mrs']] })),
-          h('td', { style: 'width:140px' }, field('', r, 'policy', { list: policyList })),
-          h('td', {}, field('', r, 'noResolve', { type: 'checkbox', aria: 'no-resolve' })),
+          h('td', { style: 'width:36px' }, field('', r, 'enabled', { type: 'checkbox', aria: '启用' })),
+          h('td', { style: 'width:150px' }, field('', r, 'name', { placeholder: '名称' })),
+          h('td', {}, field('', r, 'url', { placeholder: 'https://…/规则.yaml 或 .list' })),
+          h('td', { style: 'width:190px' }, policyField(r, 'policy', policies, { missing })),
           h('td', { style: 'white-space:nowrap' }, listButtons(o.ruleSets, i))))))),
     h('div', { class: 'card' }, h('h3', {}, '后置规则'), h('p', { class: 'hint' }, '通常放 GEOIP 与兜底的 MATCH 规则。'),
       field('', o, 'rulesAfter', { type: 'textarea', rows: 4 })),
@@ -777,7 +809,8 @@ function rulesEditor(o) {
 }
 function tabRules(p) {
   return [
-    toolbar('最终规则顺序：前置规则 → 规则集（按下表顺序）→ 后置规则。Clash 自上而下匹配，命中即止。', 'rules', p),
+    toolbar('最终规则顺序：前置规则 → 规则集（按下表顺序）→ 后置规则。Clash 自上而下匹配，命中即止；排在后面的重复规则会被去掉。', 'rules', p),
+    followNote(p, 'rules'),
     rulesEditor(p),
   ];
 }
@@ -825,7 +858,14 @@ function tabPreview(p) {
           h('td', { class: 'clip', title: s.ua }, s.ua || '不适用'),
           h('td', { class: 'clip', title: s.url }, s.url || '不适用')))))),
       preview.warnings.length > 0 && h('div', { class: 'warnbox' }, preview.warnings.map(w => h('div', {}, w))),
-      h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'hint', style: 'margin:0 auto 0 0' }, `共 ${preview.total} 个节点`),
+      preview.ruleSets?.length > 0 && h('div', { class: 'card' }, h('div', { class: 'tblwrap' }, h('table', {},
+        h('tr', {}, ['规则集', '结果', '规则文件地址'].map(t => h('th', {}, t))),
+        preview.ruleSets.map(r => h('tr', {},
+          h('td', {}, r.name),
+          h('td', {}, r.error ? h('span', { class: 'tag err', title: r.error }, (r.stale ? `失败，用缓存 ${r.count} 条：` : '失败：') + r.error)
+            : h('span', { class: 'tag ok', title: r.skipped ? `有 ${r.skipped} 行认不出（客户端不支持的规则类型或写法不对），已跳过` : '' }, `${r.count} 条` + (r.skipped ? `，跳过 ${r.skipped} 行` : ''))),
+          h('td', { class: 'clip', title: r.url || '' }, r.url || '机场配置里内嵌的')))))),
+      h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'hint', style: 'margin:0 auto 0 0' }, `共 ${preview.total} 个节点、${preview.rules} 条规则`),
         h('button', { class: 'sm', onclick: () => copyText(preview.yaml, '已复制配置内容') }, '复制配置内容')),
       h('pre', {}, preview.yaml),
     ],
@@ -957,10 +997,72 @@ function sourcesPage() {
 // 规则编辑器里某个来源的候选规则名：置顶的在前，然后是拉取到的清单
 const ruleChoices = s => [...new Set([...s.pinned, ...(ruleNames[s.id]?.names || [])])];
 // 按来源的设置拼出一条规则集。之后它和来源互不影响
-function ruleSetFrom(s, name, policy) {
-  let behavior = s.behavior;
-  try { if (s.ipcidr && new RegExp(s.ipcidr).test(name)) behavior = 'ipcidr'; } catch { /* 正则写错就按默认类型 */ }
-  return { name: s.prefix + name, url: s.url.replaceAll('{name}', name), behavior, format: s.format, policy, noResolve: behavior === 'ipcidr', enabled: true };
+const ruleSetFrom = (s, name, policy) => ({ name: s.prefix + name, url: s.url.replaceAll('{name}', name), policy, enabled: true });
+// 从规则仓库挑选规则，批量添加成规则集。o 是订阅组或规则模板。可以跨仓库多选，所选规则统一用一个策略，加完可逐条改
+function ruleSetDialog(o) {
+  const srcs = cfg.ruleSources;
+  if (srcs.length === 0) return dialog('从规则仓库添加', () => h('p', { class: 'hint' }, '还没有规则仓库。到左栏的「规则仓库」页添加一个，或者在规则页用「手动添加」直接填规则集地址。'), []);
+  const policies = policyNames(o), addId = nextId('rsadd');
+  const st = { src: (srcs.find(s => s.id === ui.ruleSrc) || srcs[0]).id, q: '', policy: policies[0] || '' };
+  const picked = []; // { s, name }，按选择的先后
+  const curSrc = () => srcs.find(s => s.id === st.src);
+  const urls = new Set(o.ruleSets.map(r => r.url.trim()));
+  const added = (s, n) => urls.has(s.url.replaceAll('{name}', n).trim()); // 按地址判断，前缀、名称改过也认得出
+  const at = (s, n) => picked.findIndex(x => x.s === s && x.name === n);
+  const toggle = (s, n) => { const i = at(s, n); i >= 0 ? picked.splice(i, 1) : picked.push({ s, name: n }); draw(); };
+  const hits = () => { const q = st.q.trim().toLowerCase(); return ruleChoices(curSrc()).filter(n => n.toLowerCase().includes(q)); };
+  const infoEl = h('div', { class: 'row', style: 'margin:12px 0 8px' }), listEl = h('div', { class: 'chips names' }), selEl = h('div', { style: 'margin-top:14px' });
+  const chip = (s, n) => {
+    const done = added(s, n), on = at(s, n) >= 0;
+    return h('button', { class: 'sm' + (s.pinned.includes(n) ? ' pinned' : '') + (on ? ' sel' : ''), disabled: done, 'aria-pressed': String(on),
+      title: done ? '已经添加过' : on ? '点击取消选择' : '点击选择', onclick: () => toggle(s, n) }, n, done && ' ✓');
+  };
+  function draw() {
+    const s = curSrc(), info = ruleNames[s.id], q = st.q.trim(), hit = hits();
+    infoEl.replaceChildren(
+      h('span', { class: 'sublabel', style: 'margin:0 auto 0 0' }, info
+        ? `清单共 ${info.names.length} 条，拉取于 ${new Date(info.updated).toLocaleString()}。带底色的是置顶的规则，排在前面。`
+        : `还没有拉取这个仓库的规则清单，下面只有置顶的 ${s.pinned.length} 条。`),
+      s.repo.trim() && h('button', { class: 'sm', onclick: async e => { await pullRuleNames([s], e.currentTarget); draw(); } }, info ? '重新拉取' : '拉取规则清单'));
+    listEl.replaceChildren(...hit.slice(0, RULE_LIST_MAX).map(n => chip(s, n)));
+    if (hit.length > RULE_LIST_MAX) listEl.append(h('span', { class: 'more' }, `还有 ${hit.length - RULE_LIST_MAX} 条没有显示，输入关键词缩小范围`));
+    // 清单里没有的名字也允许用（清单可能没拉过或已过时），但要说明
+    if (q && !hit.includes(q) && at(s, q) < 0 && !added(s, q)) listEl.append(h('button', { class: 'sm', title: info ? '清单里没有这个名字，确认拼写（区分大小写）后再用' : '没有拉取清单，无法确认这个名字是否存在', onclick: () => toggle(s, q) }, `使用「${q}」`, h('span', { class: 'more' }, info ? '（清单里没有）' : '（未核对）')));
+    else if (hit.length === 0) listEl.append(h('span', { class: 'more' }, '没有匹配的规则'));
+    const unpinned = picked.filter(x => !x.s.pinned.includes(x.name));
+    selEl.replaceChildren(...picked.length === 0 ? [h('div', { class: 'sublabel' }, '点规则名选择，可以切换仓库继续选。输入框里按回车选中唯一或完全匹配的那条。')] : [
+      h('div', { class: 'row', style: 'margin-bottom:8px' },
+        h('span', { class: 'sublabel', style: 'margin:0 auto 0 0' }, `已选 ${picked.length} 条，将添加为以下规则集（点击移除）：`),
+        unpinned.length > 0 && h('button', { class: 'sm', title: '置顶后在这个窗口和「规则仓库」页里排在前面', onclick: () => { for (const x of unpinned) if (!x.s.pinned.includes(x.name)) x.s.pinned.push(x.name); markDirty(); draw(); } }, `置顶这 ${unpinned.length} 条`)),
+      h('div', { class: 'chips names' }, picked.map(x => h('button', { class: 'sm sel', title: `来自「${x.s.name || '(未命名)'}」，点击移除`, onclick: () => toggle(x.s, x.name) }, x.s.prefix + x.name, h('span', { 'aria-hidden': 'true' }, ' ×'))))]);
+    const btn = document.getElementById(addId);
+    if (btn) { btn.textContent = picked.length ? `添加 ${picked.length} 条` : '添加'; btn.disabled = picked.length === 0 || !st.policy.trim(); }
+  }
+  const search = field('', st, 'q', { local: true, placeholder: '搜索规则名，也可以输入清单里没有的名字', onchange: draw });
+  search.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const q = st.q.trim(), s = curSrc(), hit = hits();
+    if (!q) return;
+    const n = hit.find(x => x.toLowerCase() === q.toLowerCase()) || (hit.length === 1 ? hit[0] : hit.length === 0 ? q : null);
+    if (n == null || added(s, n)) return;
+    if (at(s, n) < 0) picked.push({ s, name: n });
+    st.q = ''; search.value = ''; draw();
+  });
+  const dlg = dialog('从规则仓库添加', () => [
+    h('p', { class: 'hint' }, '选中的规则会按所在仓库的设置（地址模板、名称前缀）拼成规则集，添加到规则列表末尾。之后它们和规则仓库互不影响。'),
+    h('div', { class: 'row' },
+      h('div', { style: 'flex:1 1 200px' }, field('', st, 'src', { local: true, options: srcs.map(s => [s.id, s.name || '(未命名)']), onchange: v => { ui.ruleSrc = v; draw(); } })),
+      h('div', { style: 'flex:2 1 260px' }, search)),
+    infoEl, listEl, selEl,
+    h('div', { style: 'margin-top:14px;max-width:320px' },
+      h('label', { class: 'f' }, '策略（所选规则都用这个，加完可以逐条改）', policyField(st, 'policy', policies, { local: true, onchange: draw }))),
+  ], [{ label: '添加', primary: true, id: addId, onclick: close => {
+    for (const x of picked) o.ruleSets.push(ruleSetFrom(x.s, x.name, st.policy.trim()));
+    close(); markDirty(); render(); toast(`已添加 ${picked.length} 条规则集`);
+  } }]);
+  dlg.style.width = 'min(760px, 94vw)';
+  draw(); search.focus();
 }
 async function pullRuleNames(list, btn) {
   list = list.filter(s => s.repo.trim());
@@ -980,7 +1082,6 @@ function ruleNamesBox(s) {
   const info = ruleNames[s.id], all = info?.names || [], known = new Set(all), pinned = new Set(s.pinned);
   const pin = n => { if (n && !pinned.has(n)) { s.pinned.push(n); markDirty(); render(); } };
   const unpin = n => { s.pinned.splice(s.pinned.indexOf(n), 1); markDirty(); render(); };
-  const manual = { name: '' };
   const listEl = h('div', { class: 'chips names' });
   const fill = () => {
     const q = (ui.ruleFilter[s.id] || '').trim().toLowerCase();
@@ -993,30 +1094,27 @@ function ruleNamesBox(s) {
   const pullBtn = h('button', { class: 'sm', onclick: e => pullRuleNames([s], e.currentTarget) }, info ? '重新拉取' : '拉取规则清单');
   return [
     h('div', { class: 'section-head' }, h('div', { class: 'section-title' }, `置顶的规则（${s.pinned.length}）`)),
-    h('div', { class: 'sublabel' }, '置顶的规则在规则编辑器的候选里排在最前面，顺序就是这里的顺序。点一下取消置顶。'),
+    h('div', { class: 'sublabel' }, '置顶的规则在「从规则仓库添加」的列表里排在最前面，顺序就是这里的顺序。点一下取消置顶。'),
     s.pinned.length > 0 && h('div', { class: 'chips names' }, s.pinned.map(n => {
       const gone = info && !known.has(n);
       return h('button', { class: 'sm pinned' + (gone ? ' gone' : ''), title: gone ? '最近一次拉取的清单里没有这条规则，点击取消置顶' : '点击取消置顶', onclick: () => unpin(n) }, n, h('span', { 'aria-hidden': 'true' }, ' ×'));
     })),
-    h('div', { class: 'row', style: 'margin-top:8px' },
-      h('div', { style: 'flex:0 1 220px' }, field('', manual, 'name', { local: true, placeholder: '手动输入规则名' })),
-      h('button', { class: 'sm', onclick: () => pin(manual.name.trim()) }, '置顶')),
     h('div', { class: 'section-head' },
       h('div', { class: 'section-title' }, info ? `规则清单（${all.length}）` : '规则清单'),
       info && h('span', { class: 'chip' }, '拉取于 ' + new Date(info.updated).toLocaleString()), pullBtn),
-    !info ? h('div', { class: 'sublabel' }, '还没有拉取过，规则编辑器的候选里只有置顶的规则。拉取后可以在这里浏览仓库里的全部规则并置顶常用的，候选里也会列出全部规则。') : [
+    !info ? h('div', { class: 'sublabel' }, '还没有拉取过，「从规则仓库添加」的列表里只有置顶的规则。拉取后可以在这里浏览仓库里的全部规则并置顶常用的，添加时也能从全部规则里选。') : [
       h('div', { class: 'sublabel' }, '点一条规则把它置顶。'),
       h('div', { style: 'max-width:320px;margin-bottom:8px' }, field('', ui.ruleFilter, s.id, { local: true, placeholder: '筛选规则名', onchange: fill })),
       listEl],
   ];
 }
 function ruleSourcesPage() {
-  const blank = () => ({ id: newID(), name: '新规则仓库', repo: '', ref: 'main', dir: '', layout: 'file', ext: '.yaml', url: '', behavior: 'classical', ipcidr: '', format: 'yaml', prefix: '', pinned: [] });
+  const blank = () => ({ id: newID(), name: '新规则仓库', repo: '', ref: 'main', dir: '', layout: 'file', ext: '.yaml', url: '', prefix: '', pinned: [] });
   return [
     h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '规则仓库'), saveControls())),
     h('div', { class: 'content' },
       h('p', { class: 'hint' }, '第三方规则仓库。订阅组和模板的「规则」页里，可以从这里的来源选一条规则快速添加成规则集。来源只是添加时的帮手：添加进去的规则集存的是拼好的地址，之后在这里修改或删除来源，不会改动已经添加的规则集。'),
-      h('p', { class: 'hint' }, '规则清单（仓库里有哪些规则）不会自动更新，需要时点「拉取」。清单通过 GitHub 接口获取，和上游订阅一样走 HTTP_PROXY / HTTPS_PROXY；匿名访问按出口 IP 每小时限 60 次，不够用时给服务设置环境变量 GITHUB_TOKEN。规则的内容始终由客户端自己下载，这里只列名字。'),
+      h('p', { class: 'hint' }, '规则清单（仓库里有哪些规则）不会自动更新，需要时点「拉取」。清单通过 GitHub 接口获取，和上游订阅一样走 HTTP_PROXY / HTTPS_PROXY；匿名访问按出口 IP 每小时限 60 次，不够用时给服务设置环境变量 GITHUB_TOKEN。规则文件的内容在生成订阅时由服务端下载、展开成规则，和这里的清单无关。'),
       cfg.ruleSources.length === 0 ? empty('还没有规则仓库', '添加一个来源，或者在规则页里直接手填规则集的地址。')
         : h('div', { class: 'list' }, cfg.ruleSources.map((s, i) => {
           const info = ruleNames[s.id];
@@ -1031,11 +1129,8 @@ function ruleSourcesPage() {
                 field('规则所在目录（空为仓库根目录）', s, 'dir', { placeholder: '例：rule/Clash' }),
                 field('目录结构', s, 'layout', { options: [['file', '每个文件是一条规则'], ['dir', '每个子目录是一条规则']], onchange: render }),
                 s.layout !== 'dir' && field('只列这个扩展名的文件', s, 'ext', { placeholder: '例：.yaml' }),
-                field('规则文件地址（{name} 代表规则名）', s, 'url', { wide: true, placeholder: 'https://raw.githubusercontent.com/owner/repo/main/{name}.yaml' }),
-                field('规则类型', s, 'behavior', { options: [['classical', 'classical'], ['domain', 'domain'], ['ipcidr', 'ipcidr']] }),
-                field('规则名匹配此正则时按 ipcidr（可选）', s, 'ipcidr', { placeholder: '例：cidr$' }),
-                field('文件格式', s, 'format', { options: [['yaml', 'yaml'], ['text', 'text'], ['mrs', 'mrs（需 mihomo 内核）']] }),
-                field('规则集名称前缀（可选）', s, 'prefix', { placeholder: '例：ls-' })),
+                field('规则文件地址（{name} 代表规则名；yaml 或文本，不支持 mrs）', s, 'url', { wide: true, placeholder: 'https://raw.githubusercontent.com/owner/repo/main/{name}.yaml' }),
+                field('规则集名称前缀（可选，用来区分不同仓库的同名规则）', s, 'prefix', { placeholder: '例：ls-' })),
               ruleNamesBox(s),
             ],
           });

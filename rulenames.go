@@ -79,7 +79,7 @@ func (s *RuleNameStore) Set(id string, l RuleNames, keep map[string]bool) error 
 
 // normalize 校验并规范化一个规则仓库，保存配置和拉取清单前都会调用。
 func (s *RuleSource) normalize() error {
-	for _, f := range []*string{&s.Name, &s.Repo, &s.Ref, &s.Dir, &s.Ext, &s.URL, &s.IPCIDR, &s.Prefix} {
+	for _, f := range []*string{&s.Name, &s.Repo, &s.Ref, &s.Dir, &s.Ext, &s.URL, &s.Prefix} {
 		*f = strings.TrimSpace(*f)
 		if len(*f) > 500 || strings.ContainsFunc(*f, unicode.IsControl) {
 			return errors.New("各项不能超过 500 个字符，也不能包含换行等控制字符")
@@ -110,12 +110,6 @@ func (s *RuleSource) normalize() error {
 		if u, err := url.Parse(s.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
 			return errors.New("规则文件地址必须以 http:// 或 https:// 开头")
 		}
-	}
-	if !map[string]bool{"classical": true, "domain": true, "ipcidr": true}[s.Behavior] {
-		s.Behavior = "classical"
-	}
-	if !map[string]bool{"yaml": true, "text": true, "mrs": true}[s.Format] {
-		s.Format = "yaml"
 	}
 	pinned, seen := []string{}, map[string]bool{}
 	for _, n := range s.Pinned {

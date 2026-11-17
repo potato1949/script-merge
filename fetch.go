@@ -29,13 +29,31 @@ const (
 	failBackoff      = 30 * time.Second // 拉取失败后，同一链接 + UA 在这段时间内不再重试
 )
 
+// cacheFormat 是缓存内容的格式版本。旧格式的缓存（缺少后来加的字段）视为已过期，但拉取失败时仍可作为旧缓存使用。
+//
+//	2：加入上游的 hosts、fake-ip-filter、策略组、规则和 rule-providers
+const cacheFormat = 2
+
 // cacheEntry 是某个订阅以某个「链接 + UA」拉取到的结果。
 type cacheEntry struct {
-	Key       string           `json:"key"`
-	SubID     string           `json:"subId"`
-	Proxies   []map[string]any `json:"proxies"`
-	Userinfo  string           `json:"userinfo"`
-	FetchedAt time.Time        `json:"fetchedAt"`
+	Format    int       `json:"format"`
+	Key       string    `json:"key"`
+	SubID     string    `json:"subId"`
+	Userinfo  string    `json:"userinfo"`
+	FetchedAt time.Time `json:"fetchedAt"`
+	upstream
+}
+
+// upstream 是从上游内容里取出的部分。分享链接列表只有节点；Clash YAML 还带着下面这些：
+// 节点地址解析用的 hosts / fake-ip-filter（Build 只取和实际节点有关的那部分），
+// 以及订阅组选了「沿用机场的策略组和规则」时用到的策略组、规则和规则里引用的 rule-providers。
+type upstream struct {
+	Proxies       []map[string]any `json:"proxies"`
+	Hosts         map[string]any   `json:"hosts,omitempty"`
+	FakeIPFilter  []string         `json:"fakeIpFilter,omitempty"`
+	Groups        []map[string]any `json:"groups,omitempty"`
+	Rules         []string         `json:"rules,omitempty"`
+	RuleProviders map[string]any   `json:"ruleProviders,omitempty"`
 }
 
 // SubStatus 描述一次构建中某个订阅的状态。
@@ -48,7 +66,8 @@ type SubStatus struct {
 	Count     int       `json:"count"` // 拉取到的节点数（过滤前）
 	Used      int       `json:"used"`  // 过滤后实际使用的节点数
 	Error     string    `json:"error,omitempty"`
-	Stale     bool      `json:"stale"` // 拉取失败，使用了旧缓存
+	Stale     bool      `json:"stale"`           // 拉取失败，使用了旧缓存
+	Hosts     int       `json:"hosts,omitempty"` // 带过来的上游 hosts 条数（节点地址经 hosts 映射时才有）
 	FetchedAt time.Time `json:"fetchedAt"`
 }
 
@@ -60,6 +79,20 @@ type SourceState struct {
 	OKTime   time.Time `json:"okTime,omitzero"`    // 最近一次成功的时间
 	Count    int       `json:"count"`              // 最近一次成功拿到的节点数
 	Userinfo string    `json:"userinfo,omitempty"` // 最近一次成功时上游的 Subscription-Userinfo（流量、到期时间）
+	// 最近一次成功时上游带的策略组名和规则条数：界面上「沿用机场的策略组和规则」用它们给出策略名候选和说明
+	Groups []string `json:"groups,omitempty"`
+	Rules  int      `json:"rules,omitempty"`
+}
+
+// stateOf 是一份成功拉取的结果对应的 SourceState。
+func stateOf(e *cacheEntry) SourceState {
+	st := SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo, Rules: len(e.Rules)}
+	for _, g := range e.Groups {
+		if name, _ := g["name"].(string); name != "" {
+			st.Groups = append(st.Groups, name)
+		}
+	}
+	return st
 }
 
 type failure struct {
@@ -76,13 +109,14 @@ type Fetcher struct {
 	fails map[string]failure
 	state map[string]SourceState // 来源 ID → 最近一次拉取的结果
 	locks map[string]*sync.Mutex // 每个缓存键一把锁，避免并发请求重复拉取上游
+	rules *RuleFetcher           // 规则集的规则文件
 }
 
 func NewFetcher(dataDir string) *Fetcher {
 	f := &Fetcher{
 		dir:   filepath.Join(dataDir, "cache"),
 		cache: map[string]*cacheEntry{}, fails: map[string]failure{}, locks: map[string]*sync.Mutex{},
-		state: map[string]SourceState{},
+		state: map[string]SourceState{}, rules: NewRuleFetcher(filepath.Join(dataDir, "rulecache")),
 	}
 	_ = os.MkdirAll(f.dir, 0o755)
 	files, _ := filepath.Glob(filepath.Join(f.dir, "*.json"))
@@ -95,7 +129,7 @@ func NewFetcher(dataDir string) *Fetcher {
 		}
 		f.cache[e.Key] = &e
 		if e.FetchedAt.After(f.state[e.SubID].OKTime) {
-			f.state[e.SubID] = SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo}
+			f.state[e.SubID] = stateOf(&e)
 		}
 	}
 	return f
@@ -138,7 +172,7 @@ func (f *Fetcher) store(e *cacheEntry) {
 	defer f.mu.Unlock()
 	f.cache[e.Key] = e
 	delete(f.fails, e.Key)
-	f.state[e.SubID] = SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo}
+	f.state[e.SubID] = stateOf(e)
 	if b, err := json.Marshal(e); err == nil {
 		_ = os.WriteFile(filepath.Join(f.dir, e.Key+".json"), b, 0o600)
 	}
@@ -178,14 +212,14 @@ func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, f
 	f.mu.Unlock()
 
 	if !force {
-		if cached != nil && time.Since(cached.FetchedAt) < ttl {
+		if cached != nil && cached.Format == cacheFormat && time.Since(cached.FetchedAt) < ttl {
 			return cached, nil
 		}
 		if fail.err != nil && time.Since(fail.at) < failBackoff {
 			return cached, fail.err
 		}
 	}
-	proxies, userinfo, err := fetchSubscription(url, ua, sub.UnlockURL, unlockUA)
+	up, userinfo, err := fetchSubscription(url, ua, sub.UnlockURL, unlockUA)
 	if err != nil {
 		f.mu.Lock()
 		f.fails[key] = failure{time.Now(), err}
@@ -195,7 +229,7 @@ func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, f
 		f.mu.Unlock()
 		return cached, err
 	}
-	e := &cacheEntry{Key: key, SubID: sub.ID, Proxies: proxies, Userinfo: userinfo, FetchedAt: time.Now()}
+	e := &cacheEntry{Format: cacheFormat, Key: key, SubID: sub.ID, Userinfo: userinfo, FetchedAt: time.Now(), upstream: *up}
 	f.store(e)
 	return e, nil
 }
@@ -230,7 +264,7 @@ func proxySummary() string {
 	return "上游拉取走代理：" + strings.Join(parts, "，")
 }
 
-func fetchSubscription(url, ua, unlockURL, unlockUA string) ([]map[string]any, string, error) {
+func fetchSubscription(url, ua, unlockURL, unlockUA string) (*upstream, string, error) {
 	// 没有自定义 Transport，落在 http.DefaultTransport 上，它会读 HTTP_PROXY / HTTPS_PROXY / NO_PROXY。
 	// 以后换成自定义 Transport 时要带上 Proxy: http.ProxyFromEnvironment，否则代理失效（TestFetchUsesProxy 会发现）。
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -267,27 +301,28 @@ func fetchSubscription(url, ua, unlockURL, unlockUA string) ([]map[string]any, s
 	if err != nil {
 		return nil, "", fmt.Errorf("读取订阅失败: %w", err)
 	}
-	proxies, err := parseSubscription(body)
+	up, err := parseSubscription(body)
 	if err != nil {
 		return nil, "", err
 	}
-	return proxies, resp.Header.Get("Subscription-Userinfo"), nil
+	return up, resp.Header.Get("Subscription-Userinfo"), nil
 }
 
 // parseSubscription 支持 Clash YAML 以及 base64 / 明文的分享链接列表。
-func parseSubscription(body []byte) ([]map[string]any, error) {
-	var doc struct {
-		Proxies []map[string]any `yaml:"proxies"`
-	}
-	if err := yaml.Unmarshal(body, &doc); err == nil && len(doc.Proxies) > 0 {
-		var out []map[string]any
-		for _, p := range doc.Proxies {
-			if name, _ := p["name"].(string); name != "" {
-				out = append(out, p)
+// YAML 按通用的 map 解析再逐项取，某一部分写法不规范只丢掉那一部分，不影响节点。
+func parseSubscription(body []byte) (*upstream, error) {
+	var doc map[string]any
+	if err := yaml.Unmarshal(body, &doc); err == nil {
+		up := &upstream{Proxies: mapsOf(doc["proxies"], true)}
+		if len(up.Proxies) > 0 {
+			up.Hosts, _ = doc["hosts"].(map[string]any)
+			if dns, _ := doc["dns"].(map[string]any); dns != nil {
+				up.FakeIPFilter = stringsOf(dns["fake-ip-filter"])
 			}
-		}
-		if len(out) > 0 {
-			return out, nil
+			up.Groups = mapsOf(doc["proxy-groups"], true)
+			up.Rules = stringsOf(doc["rules"])
+			up.RuleProviders, _ = doc["rule-providers"].(map[string]any)
+			return up, nil
 		}
 	}
 	text := strings.TrimSpace(string(body))
@@ -297,9 +332,35 @@ func parseSubscription(body []byte) ([]map[string]any, error) {
 		}
 	}
 	if proxies := parseURIList(text); len(proxies) > 0 {
-		return proxies, nil
+		return &upstream{Proxies: proxies}, nil
 	}
 	return nil, errors.New("订阅内容中没有可识别的节点（需要 Clash YAML 或分享链接列表）")
+}
+
+// mapsOf 取出列表里的对象；named 为真时只要带 name 的。
+func mapsOf(v any, named bool) []map[string]any {
+	list, _ := v.([]any)
+	var out []map[string]any
+	for _, it := range list {
+		m, _ := it.(map[string]any)
+		if name, _ := m["name"].(string); m == nil || (named && name == "") {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// stringsOf 取出列表里的非空字符串。
+func stringsOf(v any) []string {
+	list, _ := v.([]any)
+	var out []string
+	for _, it := range list {
+		if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	return out
 }
 
 func decodeBase64(s string) (string, bool) {

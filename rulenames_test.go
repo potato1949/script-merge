@@ -111,17 +111,17 @@ func TestValidateRuleSources(t *testing.T) {
 	a, do := newTestApp(t)
 	cfg := a.store.Config()
 	cfg.RuleSources = []RuleSource{
-		{ID: "x", Name: " ", Repo: " o/r ", Ref: "main", Dir: "/a/b/", Layout: "weird", Ext: "list", URL: "https://x.example/{name}.list", Behavior: "?", Format: "?", Pinned: []string{" A ", "", "A", "B"}},
-		{ID: "aaaaaaaaaaaaaaaa", Name: "只有置顶", Layout: "dir", Ext: ".x", Behavior: "ipcidr", Format: "mrs"},
+		{ID: "x", Name: " ", Repo: " o/r ", Ref: "main", Dir: "/a/b/", Layout: "weird", Ext: "list", URL: "https://x.example/{name}.list", Pinned: []string{" A ", "", "A", "B"}},
+		{ID: "aaaaaaaaaaaaaaaa", Name: "只有置顶", Layout: "dir", Ext: ".x"},
 		{ID: "aaaaaaaaaaaaaaaa", Name: "重复的 ID"},
 	}
 	b, _ := json.Marshal(cfg)
 	got := decode[Config](t, do("PUT", "/api/config", string(b))).RuleSources
 	s := got[0]
-	if !validID(s.ID) || s.Name != "o/r" || s.Repo != "o/r" || s.Dir != "a/b" || s.Layout != "file" || s.Ext != ".list" || s.Behavior != "classical" || s.Format != "yaml" || !reflect.DeepEqual(s.Pinned, []string{"A", "B"}) {
+	if !validID(s.ID) || s.Name != "o/r" || s.Repo != "o/r" || s.Dir != "a/b" || s.Layout != "file" || s.Ext != ".list" || !reflect.DeepEqual(s.Pinned, []string{"A", "B"}) {
 		t.Errorf("规范化结果不符: %+v", s)
 	}
-	if s = got[1]; s.ID != "aaaaaaaaaaaaaaaa" || s.Ext != "" || s.Behavior != "ipcidr" || s.Format != "mrs" || s.Pinned == nil {
+	if s = got[1]; s.ID != "aaaaaaaaaaaaaaaa" || s.Ext != "" || s.Pinned == nil {
 		t.Errorf("规范化结果不符: %+v", s)
 	}
 	if got[2].ID == got[1].ID || !validID(got[2].ID) {

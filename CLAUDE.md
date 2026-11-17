@@ -46,31 +46,34 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 `Config` 下有 `Profiles[]`（各自带 `Groups`、内嵌的 `Rules`、`Parser`，以及对节点来源的引用 `Sources []SourceRef`）、全局的节点来源 `Sources[]`、`Templates[]`、规则仓库 `RuleSources[]`，以及全局的 `BaseConfig` / `CacheMinutes` / `UpdateInterval` / `UserAgent`（固定 UA）/ `UnlockUserAgent`（解锁 UA）。
 
-- **节点来源是全局对象，订阅组只存引用**：`Source` 放属于来源本身的内容（名称、`Kind`、链接、`UAMode`、解锁地址、手填节点），`SourceRef` 放「这个订阅组怎么用它」（启用、前缀、Include / Exclude、前置代理 `Dialer`）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次。给来源加字段时先想清楚它属于哪一边
+- **节点来源是全局对象，订阅组只存引用**：`Source` 放属于来源本身的内容（名称、`Kind`、链接、`UAMode`、解锁地址、手填节点），`SourceRef` 放「这个订阅组怎么用它」（启用、前缀、Include / Exclude、前置代理 `Dialer`、沿用机场的策略组和规则 `Follow`）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次。给来源加字段时先想清楚它属于哪一边
 - `Source.Kind`：`remote`（远程订阅）或 `manual`（手填节点）；空值等同 `remote`
 - **模板是复制语义**：套用 = 把模板内容复制进订阅组，之后互不影响。服务端只存 `Templates`，套用完全是前端对 `cfg` 对象的操作，`Build` 不知道模板的存在。模板只在「模板」页新建和编辑
 - `Profile.Applied` 按模板类型记下最近一次套用的模板 ID 和当时的内容摘要（前端的 `digest` 计算），只用于界面上的「来自模板 X / 已修改 / 模板有更新」提示，不做任何自动同步
-- 内置模板（`seedTemplates`）只在新建配置或迁移时写入一次。两套策略组模板和两套规则模板共用同一批策略组名（`gProxy` 等常量）才能任意组合，新增内置模板要沿用这些名字（`TestSeedTemplatesAreConsistent` 会检查）
+- 内置模板（`seedTemplates`）只在新建配置或迁移时写入一次。两套策略组模板和规则模板共用同一批策略组名（`gProxy` 等常量）才能任意组合，新增内置模板要沿用这些名字（`TestSeedTemplatesAreConsistent` 会检查）
 
-- **规则仓库也是复制语义**：`RuleSource` 描述一个第三方规则仓库（清单从 GitHub 的哪个目录列、规则集的地址模板和类型、置顶的规则名），只用于规则编辑器的「从来源添加」。前端 `ruleSetFrom` 拼出的 `RuleSet` 存的是完整地址，之后和来源无关，`Build` 不读 `RuleSources`。内置来源（`seedRuleSources`）同样只在新建配置或迁移时写入一次
+- **规则仓库也是复制语义**：`RuleSource` 描述一个第三方规则仓库（清单从 GitHub 的哪个目录列、规则集的地址模板、名称前缀、置顶的规则名），只用于规则编辑器的「从规则仓库添加」（`ruleSetDialog`）。前端 `ruleSetFrom` 拼出的 `RuleSet` 存的是完整地址，之后和来源无关，`Build` 不读 `RuleSources`。内置来源（`seedRuleSources`）同样只在新建配置或迁移时写入一次
 
 ### 规则清单（`rulenames.go`）
 
 - 各规则仓库里有哪些规则名存在 `DATA_DIR/rulenames.json`，不属于配置，不随导出。**只在用户点「拉取」时更新**（`POST /api/rule-names`），没有定时任务（这是用户明确要求的）
 - 拉取是对 GitHub git/trees 接口的一次请求，走环境变量里的代理；匿名访问按出口 IP 每小时限 60 次，`GITHUB_TOKEN` 环境变量可带令牌。测试里把 `githubAPI` 换成 httptest 的地址
-- 置顶（`RuleSource.Pinned`）属于配置：候选列表 = 置顶的规则 + 清单里其余的，没拉过清单时只有置顶的
+- 置顶（`RuleSource.Pinned`）属于配置：列表 = 置顶的规则 + 清单里其余的（`ruleChoices`），没拉过清单时只有置顶的
 
 ### 构建流程（`build.go` 的 `Build`）
 
 `GET /sub/{token}` 和 `POST /api/preview` 调同一个 `Build(cfg, profile, fetcher, clientUA, force)`：
 
-基础配置 → 并发处理本组引用的节点来源 → 过滤 / 加前缀 / 重名加序号 → 生成策略组 → 生成规则 → `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
+基础配置 → 并发处理本组引用的节点来源 → 过滤 / 加前缀 / 重名加序号，带上节点地址用到的上游 hosts → 生成策略组（沿用的机场策略组在前）→ 生成规则（规则集展开成平铺规则）→ `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
 
 - **预览不保存**：`POST /api/preview` 的请求体带着前端当前的整份 `cfg`（可能还没保存）和订阅组下标，服务端先过 `validateConfig` 再 `Build`，不落盘。「先预览、满意再保存」是界面的基本流程，不要让预览依赖已保存的配置
 - `clientUA` 是来拉合并链接的客户端的 UA。`resolveUA` 用它决定每个来源本次拉上游用哪个 UA：来源的 `UAMode` 是透传就用 `clientUA`，否则用全局的固定 UA（`Config.UserAgent`，空则 `defaultUA`）。每个来源只有一个上游链接，也没有自己的 UA
 - 代理链只有一种做法：`SourceRef.Dialer` 给这条引用的节点写上 `dialer-proxy`。前置代理里含有这些节点本身会成环，`validateDialers` 只警告，不自动从策略组里排除（这是用户确认的取舍）
 - 上游内容只认 Clash YAML 或分享链接列表；输出始终是 Clash YAML，不随客户端变化。其他客户端格式的方向见 `docs/CLIENT-SUPPORT.md`（加输出侧的渲染器，不加输入解析器）
 - 内存里的配置树统一用 `map[string]any` / `[]any`，不要放 `[]map[string]any` 或 `[]string`：Parser 的路径命令和 `toNode` 只认前者
+- **规则集是平铺的**（`ruleset.go`）：生成时服务端下载规则文件（缓存一天，`DATA_DIR/rulecache/`），逐行按内容判断类型，展开成带策略的规则，IP 类规则一律加 no-resolve，排在后面的重复规则去掉，认不出的类型跳过（平铺后一条认不出的规则会让客户端整个配置加载失败）。不输出 rule-providers，`RuleSet` 只有名称、地址、策略、启用。不支持 mrs。这是用户选的方向（像机场配置一样平铺），十万条级别的大规则集（Loyalsoldier 已因此去掉）只在预览里警告
+- **节点地址的 hosts**（`upstream.go` 的 `nodeHosts`）：有的机场让节点的 server 经 hosts 映射（可能多层），`Build` 顺着节点的 server 找出要用的上游 hosts 和 fake-ip-filter 条目合并进输出，无关的不带。自动进行，不需要配置
+- **沿用机场的策略组和规则**（`SourceRef.Follow`，`followGroups` / `buildRules`）：引用语义，每次取上游最新的（用户选的）。机场策略组排在本组的前面，节点名换成本组输出里的名字，包含机场全部节点的组再加上其他来源的节点；机场规则排在规则集之后、后置规则之前，其中的 RULE-SET 按机场的 rule-providers 展开
 - 面向用户的正则一律走 `compileRegex` / `optRegex`（regexp2，支持前瞻断言，带匹配超时），不要用标准库 `regexp`
 
 ### 上游拉取与缓存（`fetch.go`）
@@ -79,7 +82,8 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 - 失败时只回退到**同一个键**的旧缓存，不跨链接 / UA 回退（这是用户明确要求的行为）
 - 解锁地址是一次独立的普通 GET，UA 用全局的解锁 UA（`Config.UnlockUserAgent`，空则 `chromeUA`），不随订阅的 UA 模式变化，不与订阅请求共享 Cookie（同样是用户明确要求）
 - 来源 ID 用作缓存文件名，`validateConfig` 只接受 16 位十六进制的 ID（前端新建来源、模板时用 `newID()` 按同样格式生成，这样保存前就能被引用）
-- `Fetcher.state` 记下每个来源最近一次**实际请求上游**的结果（`SourceState`：时间、错误、上次成功的时间 / 节点数 / `Subscription-Userinfo`），`GET /api/source-status` 给界面显示。只在内存里，重启后从磁盘缓存恢复成功的部分
+- 缓存里除了节点还存着上游的 hosts、fake-ip-filter、策略组、规则、rule-providers（`upstream` 结构）。往里加要缓存的上游字段时 `cacheFormat` 加一，旧格式的缓存视为过期
+- `Fetcher.state` 记下每个来源最近一次**实际请求上游**的结果（`SourceState`：时间、错误、上次成功的时间 / 节点数 / `Subscription-Userinfo` / 机场的策略组名和规则条数），`GET /api/source-status` 给界面显示。只在内存里，重启后从磁盘缓存恢复成功的部分
 - 代理只走环境变量：`fetchSubscription` 的 `http.Client` 没有自定义 `Transport`，落在 `http.DefaultTransport` 上。以后换自定义 `Transport` 要带上 `Proxy: http.ProxyFromEnvironment`（`TestFetchUsesProxy` 会检查）。标准库对回环地址从不走代理，且只在第一次请求时读一次环境变量，所以测试在 `TestMain` 里设置代理
 
 ### 配置保存与令牌（`main.go`）
@@ -101,10 +105,11 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 迁移（`store.go` 的 `Config.migrate`）
 
-`Config.Version` 是结构版本（当前 `configVersion = 6`）。`OpenStore` 时自动迁移，原文件存为 `config.json.bak`。
+`Config.Version` 是结构版本（当前 `configVersion = 7`）。`OpenStore` 时自动迁移，原文件存为 `config.json.bak`。
 
 - 只是**加字段**不需要迁移，但零值必须是合理的默认行为
-- **改结构**：`configVersion` 加一，在 `migrate` 里加一段，旧字段以 `Legacy*` + `omitempty` 保留，并在 `TestMigrateLegacyConfig` 补一个旧文件样例
+- **改结构**：`configVersion` 加一，在 `migrate` 里加一段，并补一个旧文件样例的测试
+- **旧数据不需要细致迁移，有问题的直接清掉**（用户明确说的）。v7 就是这样：规则仓库直接换成新的内置列表，mrs / Loyalsoldier 的规则集和含有它们的规则模板直接删掉
 
 ### CFW Parser（`parser.go`）
 

@@ -318,6 +318,7 @@ func validateConfig(c *Config, tokens map[string]string) error {
 		c.Sources = []Source{}
 	}
 	sourceIDs := map[string]string{} // 提交时的来源 ID → 规范化后的 ID，用来修正订阅组里的引用
+	kinds := map[string]string{}     // 规范化后的来源 ID → 类型
 	for i := range c.Sources {
 		s := &c.Sources[i]
 		old := s.ID
@@ -348,12 +349,19 @@ func validateConfig(c *Config, tokens map[string]string) error {
 			s.UAMode = "fixed"
 		}
 	}
+	for _, s := range c.Sources {
+		kinds[s.ID] = s.Kind
+	}
 	for pi := range c.Profiles {
 		p := &c.Profiles[pi]
 		refs := []SourceRef{}
+		followed := false
 		for _, r := range p.Sources {
 			if id, ok := sourceIDs[r.Source]; ok { // 引用的来源不存在（已被删除）就去掉这条引用
 				r.Source = id
+				// 沿用机场的策略组和规则，每个订阅组只能选一个远程来源，多选的只留第一个
+				r.Follow = r.Follow && !followed && kinds[id] == "remote"
+				followed = followed || r.Follow
 				refs = append(refs, r)
 			}
 		}
@@ -530,8 +538,8 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"yaml": string(res.YAML), "subs": res.Subs, "warnings": res.Warnings,
-		"total": res.Total, "userinfo": res.Userinfo,
+		"yaml": string(res.YAML), "subs": res.Subs, "ruleSets": res.RuleSets, "warnings": res.Warnings,
+		"total": res.Total, "rules": res.Rules, "userinfo": res.Userinfo,
 	})
 }
 

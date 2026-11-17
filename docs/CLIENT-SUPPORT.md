@@ -82,7 +82,7 @@ Stash 的配置就是 Clash 格式的 YAML，现有输出可以直接用，不�
 
 ### 对本项目的影响
 
-- `build.go` 生成的是 `RULE-SET` 规则加 `type: http` 的规则集（`behavior`、`format`、`url`、`path`、`interval`）；内置模板用 classical / domain / ipcidr 的 yaml 规则集，加 `GEOIP,CN` 和 `MATCH`。这些都在两边的交集里，**不需要为 Stash 改任何输出**。
+- 规则集由服务端展开成平铺的规则（见 DEVELOPMENT.md「规则集的平铺」），输出里没有 `rule-providers`。展开后可能出现 `DOMAIN-REGEX`、`IP-ASN`、`PROCESS-NAME` 等类型，是否都在 Stash 支持的范围内需要对照上表；内置模板用的 blackmatrix7 规则主要是 `DOMAIN*` / `IP-CIDR*`，加 `GEOIP,CN` 和 `MATCH`。
 - 风险只在用户手写的前置 / 后置规则和 Parser 加进来的内容：其中若有 mihomo 独有的类型（最可能是 `SUB-RULE`、`SRC-IP-CIDR`），在 Stash 上可能有问题。
 - 可选的后续改进：客户端 UA 是 Stash 时，对上表「mihomo 有，Stash 文档没提」的规则行给出警告。是否直接删掉这些行，等下面的实机测试结果再定。
 

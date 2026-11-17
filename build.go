@@ -15,11 +15,13 @@ import (
 )
 
 type BuildResult struct {
-	YAML     []byte      `json:"-"`
-	Subs     []SubStatus `json:"subs"`
-	Warnings []string    `json:"warnings"`
-	Total    int         `json:"total"` // 最终节点总数
-	Userinfo string      `json:"userinfo"`
+	YAML     []byte          `json:"-"`
+	Subs     []SubStatus     `json:"subs"`
+	RuleSets []RuleSetStatus `json:"ruleSets"`
+	Warnings []string        `json:"warnings"`
+	Total    int             `json:"total"` // 最终节点总数
+	Rules    int             `json:"rules"` // 最终规则条数（Parser 之前）
+	Userinfo string          `json:"userinfo"`
 }
 
 func deepCopy(v any) any {
@@ -92,7 +94,8 @@ func resolveUA(cfg Config, s Source, clientUA string) string {
 }
 
 // Build 为订阅组 p 拉取订阅并生成最终配置。clientUA 是拉取合并链接的客户端的 UA。流程：
-// 基础配置 → 拉取订阅 / 解析手动节点 → 汇总节点 → 策略组 → 规则 → Parser → 校验 → 输出 YAML
+// 基础配置 → 拉取订阅 / 解析手动节点 → 汇总节点（带上节点地址解析要用的 hosts）→ 策略组 → 规则（规则集展开成平铺规则）
+// → Parser → 校验 → 输出 YAML
 func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*BuildResult, error) {
 	res := &BuildResult{Warnings: []string{}}
 	warn := func(format string, a ...any) { res.Warnings = append(res.Warnings, fmt.Sprintf(format, a...)) }
@@ -140,7 +143,7 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 				if err != nil {
 					st.Error = err.Error()
 				} else {
-					entries[i] = &cacheEntry{Proxies: nodes}
+					entries[i] = &cacheEntry{upstream: upstream{Proxies: nodes}}
 					st.Count = len(nodes)
 				}
 				res.Subs[i] = st
@@ -170,7 +173,7 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 	// 2. 汇总节点（重名节点自动加序号）
 	proxies := []any{}
 	seen := map[string]bool{}
-	add := func(p map[string]any, prefix, dialer string) {
+	add := func(p map[string]any, prefix, dialer string) string {
 		p = deepCopy(p).(map[string]any)
 		if dialer != "" { // 前置代理：覆盖节点自带的 dialer-proxy
 			p["dialer-proxy"] = dialer
@@ -183,13 +186,17 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 		seen[name] = true
 		p["name"] = name
 		proxies = append(proxies, p)
+		return name
 	}
 	var infos []string
+	renames := make([]map[string][]string, len(subs)) // 每条引用：上游节点名 → 输出里的名字（被过滤掉的没有）
 	for i, s := range subs {
 		e := entries[i]
 		if e == nil {
 			continue
 		}
+		renames[i] = map[string][]string{}
+		var servers []string
 		if e.Userinfo != "" {
 			infos = append(infos, e.Userinfo)
 		}
@@ -206,15 +213,45 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 			if (inc != nil && !reMatch(inc, name)) || (exc != nil && reMatch(exc, name)) {
 				continue
 			}
-			add(p, s.Prefix, strings.TrimSpace(s.Dialer))
+			renames[i][name] = append(renames[i][name], add(p, s.Prefix, strings.TrimSpace(s.Dialer)))
+			if server, ok := p["server"].(string); ok {
+				servers = append(servers, server)
+			}
 			res.Subs[i].Used++
 		}
+		hosts, filter := nodeHosts(&e.upstream, servers)
+		res.Subs[i].Hosts = len(hosts)
+		res.Warnings = append(res.Warnings, mergeNodeHosts(root, hosts, filter)...)
 	}
 	res.Userinfo = mergeUserinfo(infos)
 	nodeNames := namesOf(proxies)
 
-	// 3. 策略组
+	// 3. 策略组：先是沿用的机场策略组，再是本组自己的；重名时本组自己的优先
 	groups := []any{}
+	own, taken := map[string]bool{}, map[string]bool{}
+	for _, g := range p.Groups {
+		own[strings.TrimSpace(g.Name)] = true
+	}
+	for i, s := range subs {
+		if !s.Follow || entries[i] == nil {
+			continue
+		}
+		if len(entries[i].Groups) == 0 && len(entries[i].Rules) == 0 {
+			warn("「%s」选了沿用机场的策略组和规则，但上游内容里没有（只有 Clash 格式的订阅才带）", s.Name)
+			continue
+		}
+		gs, ws := followGroups(s.Name, &entries[i].upstream, renames[i], nodeNames)
+		res.Warnings = append(res.Warnings, ws...)
+		for _, g := range gs {
+			name := fmt.Sprint(g["name"])
+			if own[name] || taken[name] {
+				warn("「%s」的策略组「%s」和已有的策略组重名，没有带过来", s.Name, name)
+				continue
+			}
+			taken[name] = true
+			groups = append(groups, g)
+		}
+	}
 	for _, g := range p.Groups {
 		if strings.TrimSpace(g.Name) == "" {
 			continue
@@ -257,35 +294,25 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 		groups = append(groups, gm)
 	}
 
-	// 4. 规则：前置规则 → 规则集 → 后置规则
-	providers := map[string]any{}
-	rules := splitLines(p.RulesBefore)
-	for _, rs := range p.RuleSets {
-		if !rs.Enabled || rs.Name == "" || rs.URL == "" {
-			continue
+	// 4. 规则：前置规则 → 规则集 → 沿用的机场规则 → 后置规则。
+	// 规则集和机场规则里的 RULE-SET 都由服务端下载规则文件，展开成平铺的规则；排在后面的重复规则去掉
+	var follows []followSource
+	for i, s := range subs {
+		if s.Follow && entries[i] != nil {
+			follows = append(follows, followSource{s.Name, &entries[i].upstream})
 		}
-		format := firstNonEmpty(rs.Format, "yaml")
-		ext := map[string]string{"yaml": "yaml", "text": "list", "mrs": "mrs"}[format]
-		providers[rs.Name] = map[string]any{
-			"type": "http", "behavior": firstNonEmpty(rs.Behavior, "classical"), "format": format,
-			"url": rs.URL, "path": "./ruleset/" + rs.Name + "." + ext, "interval": 86400,
-		}
-		rule := "RULE-SET," + rs.Name + "," + firstNonEmpty(rs.Policy, "DIRECT")
-		if rs.NoResolve {
-			rule += ",no-resolve"
-		}
-		rules = append(rules, rule)
 	}
-	rules = append(rules, splitLines(p.RulesAfter)...)
+	rules := buildRules(p, follows, f.rules, res)
 	if rules == nil {
 		rules = []any{}
+	}
+	res.Rules = len(rules)
+	if res.Rules > ruleWarnTotal {
+		warn("规则共 %d 条。平铺的规则客户端要逐条匹配，太多会变慢，可以换用更精简的规则集", res.Rules)
 	}
 
 	root["proxies"] = proxies
 	root["proxy-groups"] = groups
-	if len(providers) > 0 {
-		root["rule-providers"] = providers
-	}
 	root["rules"] = rules
 
 	// 5. CFW Parser
@@ -305,6 +332,114 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 	}
 	res.YAML = unescapeRunes(buf.Bytes())
 	return res, nil
+}
+
+// followSource 是一条选了「沿用机场的策略组和规则」的来源引用拉到的上游内容。
+type followSource struct {
+	name string
+	up   *upstream
+}
+
+// buildRules 生成最终的规则列表：前置规则 → 规则集 → 沿用的机场规则 → 后置规则。
+// 规则集和机场规则里的 RULE-SET 引用的规则文件一起并发下载，展开成带策略的规则；排在后面的重复规则去掉。
+func buildRules(p Profile, follows []followSource, rf *RuleFetcher, res *BuildResult) []any {
+	warn := func(format string, a ...any) { res.Warnings = append(res.Warnings, fmt.Sprintf(format, a...)) }
+	var l ruleList
+	for _, r := range splitLines(p.RulesBefore) {
+		l.add(fmt.Sprint(r))
+	}
+
+	// 先收集要下载的地址，一次并发下载
+	var urls []string
+	idx := map[string]int{}
+	need := func(u string) {
+		if _, ok := idx[u]; !ok {
+			idx[u] = len(urls)
+			urls = append(urls, u)
+		}
+	}
+	var sets []RuleSet
+	for _, rs := range p.RuleSets {
+		if rs.URL = strings.TrimSpace(rs.URL); rs.Enabled && rs.URL != "" {
+			sets = append(sets, rs)
+			need(rs.URL)
+		}
+	}
+	followSets := make([]map[int]followRuleSet, len(follows)) // 机场规则的下标 → 它引用的规则文件
+	for i, fs := range follows {
+		followSets[i] = map[int]followRuleSet{}
+		for j, r := range fs.up.Rules {
+			if typ, _, _ := strings.Cut(r, ","); strings.TrimSpace(typ) == "RULE-SET" {
+				rs := parseFollowRuleSet(fs.up, r)
+				if rs.url != "" {
+					need(rs.url)
+				}
+				followSets[i][j] = rs
+			}
+		}
+	}
+	entries, errs := rf.fetchAll(urls)
+
+	// expand 把一个规则文件按策略展开，返回预览里显示的状态
+	expand := func(name, url, policy string) RuleSetStatus {
+		st := RuleSetStatus{Name: name, URL: url}
+		e, err := entries[idx[url]], errs[idx[url]]
+		if err != nil {
+			st.Error, st.Stale = err.Error(), e != nil
+			if e == nil {
+				warn("规则集「%s」下载失败，已跳过：%v", name, err)
+			} else {
+				warn("规则集「%s」下载失败，用了 %s 的缓存：%v", name, e.FetchedAt.Format("01-02 15:04"), err)
+			}
+		}
+		if e != nil {
+			st.Count, st.Skipped, st.FetchedAt = len(e.Rules), e.Skipped, e.FetchedAt
+			for _, r := range e.Rules {
+				l.add(withPolicy(r, policy))
+			}
+		}
+		return st
+	}
+	for _, rs := range sets {
+		res.RuleSets = append(res.RuleSets, expand(firstNonEmpty(strings.TrimSpace(rs.Name), rs.URL), rs.URL, firstNonEmpty(strings.TrimSpace(rs.Policy), "DIRECT")))
+	}
+
+	matched := "" // 以 MATCH 结尾的机场规则来自哪个来源
+	for i, fs := range follows {
+		for j, r := range fs.up.Rules {
+			typ, _, _ := strings.Cut(r, ",")
+			switch strings.TrimSpace(typ) {
+			case "RULE-SET":
+				rs := followSets[i][j]
+				switch {
+				case rs.err != "":
+					warn("「%s」的规则「%s」没有展开：%s", fs.name, r, rs.err)
+				case rs.url != "":
+					res.RuleSets = append(res.RuleSets, expand(fs.name+" · "+rs.name, rs.url, rs.policy))
+				default:
+					res.RuleSets = append(res.RuleSets, RuleSetStatus{Name: fs.name + " · " + rs.name, Count: len(rs.inline)})
+					for _, x := range rs.inline {
+						l.add(withPolicy(x, rs.policy))
+					}
+				}
+				continue
+			case "SUB-RULE":
+				warn("「%s」的规则「%s」用到了子规则，没有带过来", fs.name, r)
+				continue
+			case "MATCH":
+				matched = fs.name
+			}
+			l.add(r)
+		}
+	}
+	after := splitLines(p.RulesAfter)
+	if matched != "" && len(after) > 0 {
+		warn("沿用的「%s」的规则以 MATCH 结尾，后置规则不会生效", matched)
+	}
+	for _, r := range after {
+		l.add(fmt.Sprint(r))
+	}
+	return l.rules
 }
 
 var escapedRune = regexp.MustCompile(`\\\\|\\U[0-9A-F]{8}`)

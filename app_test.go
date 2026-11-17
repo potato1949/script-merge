@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +42,14 @@ func TestMain(m *testing.M) {
 		os.Unsetenv(k)
 	}
 	os.Setenv("HTTP_PROXY", proxy.URL)
+	// 规则文件不访问外网：每个地址返回一条以文件名命名的规则，地址里带 missing 的当作 404
+	ruleDownload = func(u string) ([]byte, error) {
+		if strings.Contains(u, "missing") {
+			return nil, fmt.Errorf("HTTP 404")
+		}
+		name := path.Base(u)
+		return []byte("payload:\n  - DOMAIN-SUFFIX," + strings.TrimSuffix(name, path.Ext(name)) + ".example\n"), nil
+	}
 	code := m.Run()
 	proxy.Close()
 	os.Exit(code)
@@ -169,10 +179,11 @@ func TestURIs(t *testing.T) {
 		"unknown://x",
 	}
 	body := base64.StdEncoding.EncodeToString([]byte(strings.Join(lines, "\n")))
-	ps, err := parseSubscription([]byte(body))
-	if err != nil || len(ps) != 5 {
-		t.Fatalf("got %d, err %v", len(ps), err)
+	up, err := parseSubscription([]byte(body))
+	if err != nil || len(up.Proxies) != 5 {
+		t.Fatalf("got %v, err %v", up, err)
 	}
+	ps := up.Proxies
 	if ps[0]["name"] != "香港" || ps[0]["cipher"] != "aes-256-gcm" || ps[0]["port"] != 8388 {
 		t.Errorf("ss: %v", ps[0])
 	}
@@ -307,8 +318,8 @@ func TestBuildEndToEnd(t *testing.T) {
 	if !reflect.DeepEqual(last.Proxies, []string{"香港 01", "香港 01 2", "[M] 自建"}) {
 		t.Errorf("香港组 = %v", last.Proxies)
 	}
-	if out.DNS["enable"] != false || out.Providers["OpenAI"] == nil {
-		t.Errorf("parser 或规则集未生效")
+	if out.DNS["enable"] != false || out.Providers != nil || !slices.Contains(out.Rules, "DOMAIN-SUFFIX,OpenAI.example,"+gAI) {
+		t.Errorf("parser 或规则集未生效: %v", out.Rules)
 	}
 	if out.Rules[0] != "DOMAIN,my.com,🇭🇰 香港" || out.Rules[len(out.Rules)-1] != "MATCH,"+gFinal {
 		t.Errorf("规则 = %v", out.Rules)
