@@ -58,7 +58,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 构建流程（`build.go` 的 `Build`）
 
-`GET /sub/{token}` 和 `POST /api/preview` 调同一个 `Build(cfg, profile, fetcher, force)`：
+`GET /sub/{token}` 和 `POST /api/preview` 调同一个 `Build(cfg, profile, fetcher, mode)`（`FetchMode`：正常 / 跳过缓存 / 只用已有缓存）：
 
 本组用到的来源（底板排第一）并发拉取 → 底板拿不到或没有策略组就报错 → `root` = 底板配置去掉 proxies 的深拷贝 → 汇总节点（底板的在前；过滤 / 加前缀 / 重名加序号 / 写 dialer-proxy；非底板来源带上节点地址用到的 hosts）→ `baseGroups` 改写底板的策略组 → `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
 
@@ -78,7 +78,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 - 解锁地址是一次独立的普通 GET，UA 用全局的解锁 UA（`Config.UnlockUserAgent`，空则 `chromeUA`），不与订阅请求共享 Cookie（同样是用户明确要求）
 - 来源 ID 用作缓存文件名，`validateConfig` 只接受 16 位十六进制的 ID（前端新建来源、订阅组时用 `newID()` 按同样格式生成，这样保存前就能被引用）
 - 缓存里存节点和上游配置去掉 proxies 后的整份内容（`upstream.Doc`，键统一转成字符串）。改了缓存里存什么时 `cacheFormat` 加一，旧格式的缓存视为过期
-- `Fetcher.state` 记下每个来源最近一次**实际请求上游**的结果（`SourceState`：时间、错误、上次成功的时间 / 节点数 / `Subscription-Userinfo` / 策略组名和规则条数），`GET /api/source-status` 给界面显示（底板说明、前置代理候选）。只在内存里，重启后从磁盘缓存恢复成功的部分
+- `Fetcher.state` 记下每个来源最近一次**实际请求上游**的结果（`SourceState`：时间、错误、上次成功的时间 / 节点数 / `Subscription-Userinfo` / 策略组名），`GET /api/source-status` 给界面显示（状态标签、流量、前置代理候选）。只在内存里，重启后从磁盘缓存恢复成功的部分
 - 代理只走环境变量：`fetchSubscription` 的 `http.Client` 没有自定义 `Transport`，落在 `http.DefaultTransport` 上。以后换自定义 `Transport` 要带上 `Proxy: http.ProxyFromEnvironment`（`TestFetchUsesProxy` 会检查）。标准库对回环地址从不走代理，且只在第一次请求时读一次环境变量，所以测试在 `TestMain` 里设置代理
 
 ### 配置保存与令牌（`main.go`）
@@ -101,7 +101,8 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`page`、`pi`、`tab`、`dirty`、`srcStatus`、`previews`、`accessLog`）。页面：订阅组（标签页：节点来源 / Parser / 预览 / 本组设置）、节点来源、全局设置。
 
-- 已有来源的修改、删除只在「节点来源」页（`sourcesPage` + `sourceFields`），免得在一个组里顺手一改、别的组跟着变。订阅组的节点来源标签页（`tabSubs`）可以选用已有来源、**新建来源**（`newSourceDialog`）、移除引用、设为底板、改 `SourceRef` 上的字段，已有来源的内容只读展示；增删引用后调 `fixBase`
+- 来源的新建、修改、删除只在「节点来源」页（`sourcesPage` + `sourceFields`），免得在一个组里顺手一改、别的组跟着变。订阅组的节点来源标签页（`tabSubs`）只能选用已有来源、移除引用、设为底板、改 `SourceRef` 上的字段，来源内容只读展示；增删引用后调 `fixBase`。用户明确要求：订阅组里不放新建来源、跳转到「节点来源」页的入口，也不放底板的策略组 / 规则说明
+- 界面上不加解释性的说明文字（用户明确要求），状态、错误、警告这类必要信息除外
 - 订阅组的 ID 由前端 `newID()` 生成，预览结果 `previews` 按它存；判断「还没保存过」看 `p.token` 是否为空
 - `field(label, obj, key, opts)`：绑定到 `obj[key]` 的控件，输入即写回并标记未保存；不属于配置的临时输入传 `local: true`
 - `item(obj, opts)`：可展开的行，展开状态按对象引用记在 `openItems`

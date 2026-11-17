@@ -66,6 +66,15 @@ func (u *upstream) fakeIPFilter() []string {
 	return stringsOf(dns["fake-ip-filter"])
 }
 
+// FetchMode 决定构建时怎么用缓存。
+type FetchMode int
+
+const (
+	FetchAuto      FetchMode = iota // 缓存未过期就用缓存，否则拉取上游（客户端拉取订阅的流程）
+	FetchRefresh                    // 跳过缓存，直接拉取上游
+	FetchCacheOnly                  // 只用已有的缓存（过期的也用），绝不请求上游：打开预览时直接展示
+)
+
 // SubStatus 描述一次构建中某个来源的状态。
 type SubStatus struct {
 	Index     int       `json:"index"` // 在订阅组的来源列表里的下标
@@ -77,9 +86,11 @@ type SubStatus struct {
 	Count     int       `json:"count"` // 拉取到的节点数（过滤前）
 	Used      int       `json:"used"`  // 过滤后实际使用的节点数
 	Error     string    `json:"error,omitempty"`
-	Stale     bool      `json:"stale"`           // 拉取失败，使用了旧缓存
-	Hosts     int       `json:"hosts,omitempty"` // 带过来的上游 hosts 条数（非底板来源的节点地址经 hosts 映射时才有）
-	FetchedAt time.Time `json:"fetchedAt"`
+	Stale     bool      `json:"stale"`             // 拉取失败，使用了旧缓存
+	Hosts     int       `json:"hosts,omitempty"`   // 带过来的上游 hosts 条数（非底板来源的节点地址经 hosts 映射时才有）
+	FetchedAt time.Time `json:"fetchedAt"`         // 所用内容（缓存）的拉取时间，手动节点没有
+	ExpiresAt time.Time `json:"expiresAt"`         // 这份缓存的过期时间 = 拉取时间 + 缓存时长
+	NoCache   bool      `json:"noCache,omitempty"` // 只用缓存时，这个来源还没有可用的缓存
 }
 
 // SourceState 是一个节点来源最近一次实际请求上游的结果（命中缓存的不算）。
@@ -90,15 +101,12 @@ type SourceState struct {
 	OKTime   time.Time `json:"okTime,omitzero"`    // 最近一次成功的时间
 	Count    int       `json:"count"`              // 最近一次成功拿到的节点数
 	Userinfo string    `json:"userinfo,omitempty"` // 最近一次成功时上游的 Subscription-Userinfo（流量、到期时间）
-	// 最近一次成功时上游带的策略组名和规则条数：界面上说明底板里有什么、给前置代理提供候选
-	Groups []string `json:"groups,omitempty"`
-	Rules  int      `json:"rules,omitempty"`
+	Groups   []string  `json:"groups,omitempty"`   // 最近一次成功时上游带的策略组名：给前置代理提供候选
 }
 
 // stateOf 是一份成功拉取的结果对应的 SourceState。
 func stateOf(e *cacheEntry) SourceState {
-	rules, _ := e.Doc["rules"].([]any)
-	st := SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo, Rules: len(rules)}
+	st := SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo}
 	for _, g := range e.groups() {
 		st.Groups = append(st.Groups, fmt.Sprint(g["name"]))
 	}
@@ -210,8 +218,17 @@ func (f *Fetcher) store(e *cacheEntry) {
 // Get 以给定的链接和 UA 拉取订阅；unlockUA 是访问解锁地址用的 UA。
 // 缓存未过期时直接返回缓存；拉取失败时返回 (同一链接 + UA 的旧缓存或 nil, err)。
 // 不会回退到其他链接 / UA 的结果：不同 UA 拿到的内容可能不同，某个 UA 失败就是失败。
-func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, force bool) (*cacheEntry, error) {
+// FetchCacheOnly 只返回同一个键、当前格式的缓存（不管是否过期），没有就返回 nil，不请求上游。
+func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, mode FetchMode) (*cacheEntry, error) {
 	key := cacheKey(sub.ID, url, ua, sub.UnlockURL, unlockUA)
+	if mode == FetchCacheOnly {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if e := f.cache[key]; e != nil && e.Format == cacheFormat {
+			return e, nil
+		}
+		return nil, nil
+	}
 	l := f.keyLock(key)
 	l.Lock()
 	defer l.Unlock()
@@ -220,7 +237,7 @@ func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, f
 	cached, fail := f.cache[key], f.fails[key]
 	f.mu.Unlock()
 
-	if !force {
+	if mode != FetchRefresh {
 		if cached != nil && cached.Format == cacheFormat && time.Since(cached.FetchedAt) < ttl {
 			return cached, nil
 		}

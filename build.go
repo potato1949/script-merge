@@ -71,11 +71,14 @@ func parseCustomProxies(text string) ([]map[string]any, error) {
 	return nil, errors.New("自定义节点格式无法识别（需要 YAML 数组或分享链接）")
 }
 
+// errNoCache：只用缓存构建时，底板还没有可用的缓存。
+var errNoCache = errors.New("底板机场还没有缓存")
+
 // Build 为订阅组 p 生成最终配置。流程：
 // 并发拉取本组引用的来源 → 以底板机场的完整配置为基础 → 汇总节点（底板的在前；过滤、加前缀、重名加序号）
 // → 底板的策略组换上新的节点名，包含底板全部节点的组再加上其他来源的节点 → 带上其他来源节点地址要用的 hosts
 // → Parser → 校验 → 输出 YAML。底板的规则、rule-providers、DNS 等其余内容原样保留。
-func Build(cfg Config, p Profile, f *Fetcher, force bool) (*BuildResult, error) {
+func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, error) {
 	res := &BuildResult{Warnings: []string{}}
 	warn := func(format string, a ...any) { res.Warnings = append(res.Warnings, fmt.Sprintf(format, a...)) }
 
@@ -137,14 +140,16 @@ func Build(cfg Config, p Profile, f *Fetcher, force bool) (*BuildResult, error) 
 				res.Subs[i] = st
 				return
 			}
-			e, err := f.Get(s.Source, st.URL, ua, unlockUA, ttl, force)
+			e, err := f.Get(s.Source, st.URL, ua, unlockUA, ttl, mode)
 			if err != nil {
 				st.Error = err.Error()
 				st.Stale = e != nil
 			}
 			if e != nil {
 				st.Count = len(e.Proxies)
-				st.FetchedAt = e.FetchedAt
+				st.FetchedAt, st.ExpiresAt = e.FetchedAt, e.FetchedAt.Add(ttl)
+			} else if mode == FetchCacheOnly {
+				st.NoCache = true
 			}
 			entries[i], res.Subs[i] = e, st
 		}()
@@ -153,6 +158,8 @@ func Build(cfg Config, p Profile, f *Fetcher, force bool) (*BuildResult, error) 
 
 	base := entries[0]
 	switch {
+	case base == nil && mode == FetchCacheOnly:
+		return nil, errNoCache
 	case base == nil:
 		return nil, fmt.Errorf("底板机场「%s」拉取失败，也没有可用的缓存：%s", subs[0].Name, res.Subs[0].Error)
 	case len(base.groups()) == 0:

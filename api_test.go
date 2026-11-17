@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -192,7 +193,7 @@ func TestPreviewUnsavedAndSourceStatus(t *testing.T) {
 	}
 	ok := status()
 	if ok.Error != "" || ok.Count != 2 || ok.OKTime.IsZero() || !strings.Contains(ok.Userinfo, "total=10") ||
-		!reflect.DeepEqual(ok.Groups, []string{"选择"}) || ok.Rules != 1 {
+		!reflect.DeepEqual(ok.Groups, []string{"选择"}) {
 		t.Errorf("成功后的状态: %+v", ok)
 	}
 	fail.Store(true)
@@ -204,7 +205,73 @@ func TestPreviewUnsavedAndSourceStatus(t *testing.T) {
 		t.Errorf("失败后应保留上次成功的信息并记下错误: %+v", bad)
 	}
 	// 重启后从磁盘缓存恢复成功的那部分
-	if st := NewFetcher(filepath.Dir(a.fetcher.dir)).States()[id]; st.Count != 2 || st.Error != "" || st.Rules != 1 {
+	if st := NewFetcher(filepath.Dir(a.fetcher.dir)).States()[id]; st.Count != 2 || st.Error != "" {
 		t.Errorf("重启后的状态: %+v", st)
+	}
+}
+
+// 只用缓存的预览：没有缓存时返回 noCache 且不请求上游；有缓存时（哪怕已过期）直接用缓存生成，同样不请求上游。
+func TestPreviewCachedOnly(t *testing.T) {
+	var hits atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		fmt.Fprint(w, "proxies:\n  - {name: a, type: http, server: 1.1.1.1, port: 80}\nproxy-groups:\n  - {name: 选择, type: select, proxies: [a]}\nrules:\n  - MATCH,选择\n")
+	}))
+	defer up.Close()
+	_, do := newTestApp(t)
+	draft := Config{}
+	const id, other = "cccccccccccccccc", "dddddddddddddddd"
+	draft.CacheMinutes = 30
+	draft.Sources = []Source{{ID: id, Name: "机场", URL: up.URL}, {ID: other, Name: "另一个", URL: up.URL + "/x"}}
+	draft.Profiles = []Profile{{Name: "组", Base: id, Sources: []SourceRef{{Source: id, Enabled: true}, {Source: other, Enabled: true}}}}
+	type result struct {
+		NoCache bool
+		Cached  bool
+		Total   int
+		Now     time.Time
+		Subs    []SubStatus
+	}
+	preview := func(extra map[string]any) result {
+		t.Helper()
+		body := map[string]any{"config": draft, "profile": 0}
+		maps.Copy(body, extra)
+		b, _ := json.Marshal(body)
+		return decode[result](t, do("POST", "/api/preview", string(b)))
+	}
+	if res := preview(map[string]any{"cached": true}); !res.NoCache || hits.Load() != 0 {
+		t.Fatalf("没有缓存时应返回 noCache 且不请求上游: %+v，请求 %d 次", res, hits.Load())
+	}
+	// 只拉一次底板：另一个来源暂时不引用
+	draft.Profiles[0].Sources[1].Enabled = false
+	if res := preview(nil); res.Total != 1 || res.Cached {
+		t.Fatalf("正常预览: %+v", res)
+	}
+	draft.Profiles[0].Sources[1].Enabled = true
+	n := hits.Load()
+	res := preview(map[string]any{"cached": true})
+	if hits.Load() != n || !res.Cached || res.NoCache || res.Total != 1 || res.Now.IsZero() || len(res.Subs) != 2 {
+		t.Fatalf("有缓存时应直接用缓存生成: %+v，请求 %d 次", res, hits.Load()-n)
+	}
+	if s := res.Subs[0]; s.FetchedAt.IsZero() || !s.ExpiresAt.Equal(s.FetchedAt.Add(30*time.Minute)) || s.NoCache {
+		t.Errorf("底板的缓存时间: %+v", s)
+	}
+	if s := res.Subs[1]; !s.NoCache || s.Error != "" || !s.FetchedAt.IsZero() {
+		t.Errorf("没有缓存的来源应标记 noCache: %+v", s)
+	}
+	// 缓存时长改成 0：缓存已过期，但只用缓存时照用
+	draft.CacheMinutes = 0
+	if res := preview(map[string]any{"cached": true}); hits.Load() != n || res.Total != 1 {
+		t.Errorf("过期的缓存也应直接使用: %+v，请求 %d 次", res, hits.Load()-n)
+	}
+}
+
+func TestFormatParserAPI(t *testing.T) {
+	_, do := newTestApp(t)
+	res := decode[map[string]string](t, do("POST", "/api/format-parser", `{"text":"yaml:\n    prepend-rules:\n    - MATCH,DIRECT\n"}`))
+	if res["text"] != "yaml:\n  prepend-rules:\n    - MATCH,DIRECT\n" {
+		t.Errorf("格式化结果 = %q", res["text"])
+	}
+	if w := do("POST", "/api/format-parser", `{"text":"a: [1\n"}`); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "YAML") {
+		t.Errorf("YAML 有错时应返回 400: %d %s", w.Code, w.Body)
 	}
 }

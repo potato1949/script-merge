@@ -61,6 +61,7 @@ main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .content { padding-top: 18px; }
 
 .hint { color: var(--muted); font-size: 13px; margin: 0 0 12px; max-width: 68ch; }
+.hint.warn { color: var(--warn); }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
 .card h3, dialog h3 { margin: 0 0 4px; font: 600 17px/1.3 var(--serif); }
 .section-title { font: 600 17px/1.3 var(--serif); margin: 26px 0 10px; }
@@ -89,8 +90,6 @@ main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .empty b { display: block; color: var(--text); font: 600 16px/1.4 var(--serif); margin-bottom: 4px; }
 .section-head { display: flex; align-items: center; gap: 10px; margin: 26px 0 10px; }
 .section-head .section-title { margin: 0 auto 0 0; }
-.subhead { font-weight: 600; font-size: 13px; margin: 16px 0 8px; }
-.subhead small { font-weight: 400; color: var(--muted); margin-left: 8px; }
 
 /* 表单 */
 label.f { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); min-width: 0; }
@@ -123,8 +122,6 @@ button:disabled { opacity: .4; cursor: default; }
 .tag.err { color: var(--danger); background: var(--accent-soft); }
 .warnbox { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 9px 13px; margin-bottom: 12px; font-size: 13px; }
 .warnbox div + div { margin-top: 3px; }
-.infobox { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 9px 13px; margin-bottom: 14px; font-size: 13px; }
-.infobox div + div { margin-top: 4px; }
 pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; max-height: 62vh; font: 12.5px/1.6 var(--mono); margin: 0; }
 .tblwrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; min-width: 820px; }
@@ -146,7 +143,7 @@ dialog label.f + label.f { margin-top: 12px; }
 
 /* 登录 */
 .center { max-width: 380px; margin: 16vh auto 0; padding: 28px; }
-.center h3 { font-size: 24px; font-weight: 500; margin-bottom: 8px; }
+.center h3 { font-size: 24px; font-weight: 500; margin-bottom: 16px; }
 .center button { width: 100%; margin-top: 12px; padding: 9px; }
 
 #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 99; background: var(--text); color: var(--bg); padding: 9px 18px; border-radius: 99px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; font-size: 13.5px; }
@@ -345,7 +342,6 @@ function renderAuth(setup) {
   };
   app.replaceChildren(h('form', { class: 'card center', onsubmit: submit },
     h('h3', {}, setup ? '首次使用：设置管理密码' : '订阅合并 · 登录'),
-    h('p', { class: 'hint' }, setup ? '该密码用于登录管理页面，请妥善保存。' : '请输入管理密码。'),
     pw, h('button', { class: 'primary', type: 'submit' }, setup ? '保存并进入' : '登录')));
 }
 // 保存是把整份配置提交上去。cfg.revision 是加载时的版本号，服务端发现对不上（别的页面或设备先保存过）会拒绝，
@@ -416,15 +412,14 @@ function groupPage() {
   ];
 }
 
-// 来源本身的表单项（名称、链接等）。来源是全局的：改了之后引用它的订阅组都跟着变，所以已有来源只在「节点来源」页修改。
-// local：s 是新建对话框里还没加进配置的草稿，输入时不标记「未保存」
-function sourceFields(s, onName, local) {
+// 来源本身的表单项（名称、链接等）。来源是全局的：改了之后引用它的订阅组都跟着变，所以来源只在「节点来源」页新建和修改
+function sourceFields(s, onName) {
   return [
-    field('名称', s, 'name', { onchange: onName, local }),
-    s.kind === 'manual' ? field('节点（Clash YAML 数组，或每行一条 ss / vmess / trojan / vless / hysteria2 分享链接）', s, 'nodes', { type: 'textarea', rows: 8, wide: true, local,
+    field('名称', s, 'name', { onchange: onName }),
+    s.kind === 'manual' ? field('节点（Clash YAML 数组，或每行一条 ss / vmess / trojan / vless / hysteria2 分享链接）', s, 'nodes', { type: 'textarea', rows: 8, wide: true,
       placeholder: '- {name: 我的节点, type: ss, server: 1.2.3.4, port: 8388, cipher: aes-256-gcm, password: xxx}\n或\nss://…#节点名' }) : [
-      field('订阅链接（Clash 格式，或分享链接列表）', s, 'url', { wide: true, placeholder: 'https://…', local }),
-      field('解锁地址（可选，每次拉取前先访问一次）', s, 'unlockUrl', { wide: true, placeholder: 'https://…', local }),
+      field('订阅链接（Clash 格式，或分享链接列表）', s, 'url', { wide: true, placeholder: 'https://…' }),
+      field('解锁地址（可选，每次拉取前先访问一次）', s, 'unlockUrl', { wide: true, placeholder: 'https://…' }),
     ],
   ];
 }
@@ -458,41 +453,14 @@ function stateTag(s) {
   return st.error ? h('span', { class: 'tag err', title: st.error }, `拉取失败 · ${ago(st.time)}`)
     : h('span', { class: 'tag ok', title: '最近一次请求上游的结果' }, `${st.count} 个节点 · ${ago(st.time)}`);
 }
-// 来源展开后的一句话说明
-function stateLine(s) {
-  if (s.kind === 'manual') return null;
-  const st = srcStatus[s.id];
-  const text = !st ? '还没有拉取过上游。生成一次预览，或者等客户端来更新订阅，这里就会显示结果。'
-    : st.error ? `最近一次拉取上游失败（${fmtTime(st.time)}）：${st.error}。` + (st.okTime ? `上一次成功是 ${fmtTime(st.okTime)}，拿到 ${st.count} 个节点；那份缓存还在的话，客户端拿到的是它。` : '还没有成功过。')
-    : [`最近一次拉取上游：${fmtTime(st.time)}，${st.count} 个节点` + (st.groups?.length ? `、${st.groups.length} 个策略组、${st.rules || 0} 条规则` : '（没有策略组，不能做底板）'), ...trafficOf(s)].join('；') + '。';
-  return h('div', { class: 'sublabel' }, text);
-}
-
-// 本组的底板说明，放在节点来源页的顶部
-function baseNote(p) {
-  const s = srcOf(p.base);
-  if (!s) return h('div', { class: 'warnbox' }, p.sources.length === 0
-    ? '先添加节点来源。第一个添加的机场订阅会自动成为底板。'
-    : '还没有底板：在下面的机场订阅上点「设为底板」。手动节点不能做底板。');
-  const st = srcStatus[s.id];
-  return h('div', { class: 'infobox' },
-    h('div', {}, h('b', {}, `底板：${s.name}。`), '输出就是它的完整 Clash 配置：策略组、规则、DNS 等原样保留。其他来源的节点追加在后面，并加进底板里包含它全部节点的策略组（通常是「节点选择」「自动选择」这类）。'),
-    h('div', {}, st?.groups?.length ? `它有 ${st.groups.length} 个策略组：${st.groups.join('、')}；${st.rules || 0} 条规则。`
-      : st && !st.error ? '它最近一次返回的内容里没有策略组，不能做底板。可以在「全局设置」里换一个 UA（如 clash.meta）再试，或者换一个机场做底板。'
-      : '还没有成功拉取过它，生成一次预览后这里会列出它的策略组。'),
-    h('div', {}, '要调整底板的内容（加规则、把节点放进别的策略组等），用 Parser。'));
-}
-
-// 订阅组里只引用全局的节点来源：这里可以选用、新建（新建的同样是全局来源）、移除、选底板和设置本组的前缀 / 过滤；
-// 已有来源的内容只读，修改要到「节点来源」页，免得在一个组里顺手一改、别的组跟着变
-const editSource = s => { if (s) openItems.add(s); go('sources'); };
+// 订阅组里只引用全局的节点来源：这里可以选用已有来源、移除、选底板和设置本组的前缀 / 过滤；
+// 来源本身只在「节点来源」页新建和修改，免得在一个组里顺手一改、别的组跟着变
 function tabSubs(p) {
-  const status = previews[p.id]?.subs || [], dialerList = nextId('dialers'), bi = baseIndex(p);
+  const status = (previews[p.id]?.subs || []).filter(x => !x.noCache), dialerList = nextId('dialers'), bi = baseIndex(p);
   const use = s => { const r = blankRef(s); p.sources.push(r); fixBase(p); openItems.add(r); markDirty(); render(); };
   return [
     datalist(dialerList, srcStatus[p.base]?.groups || []),
-    baseNote(p),
-    p.sources.length === 0 ? empty('还没有节点来源', '点下面的「添加节点来源」，选用已有的来源或新建一个。')
+    p.sources.length === 0 ? empty('还没有节点来源')
       : h('div', { class: 'list' }, p.sources.map((r, i) => {
         const s = srcOf(r.source), others = usersOf(s.id).filter(x => x !== p), isBase = i === bi;
         const st = status.find(x => x.index === i && x.id === s.id);
@@ -509,25 +477,17 @@ function tabSubs(p) {
             listButtons(p.sources, i, () => { p.sources.splice(i, 1); fixBase(p); markDirty(); render(); }),
           ],
           body: () => [
-            h('div', { class: 'sublabel' }, sourceSummary(s), others.length > 0 && ` 还被 ${quote(others)} 使用。`),
-            stateLine(s),
-            h('div', { class: 'row', style: 'margin-bottom:4px' }, h('button', { class: 'sm', onclick: () => editSource(s) }, '到「节点来源」页修改')),
-            h('div', { class: 'subhead' }, '在本组里', h('small', {}, '只影响这个订阅组')),
+            h('div', { class: 'sublabel' }, sourceSummary(s)),
             h('div', { class: 'grid' },
               field('节点名前缀（可选）', r, 'prefix', { placeholder: '例：[机场A] ' }),
               field('只保留匹配的节点（正则，可选）', r, 'include', { placeholder: '例：香港|日本' }),
               field('排除匹配的节点（正则，可选）', r, 'exclude', { placeholder: '例：过期|剩余|官网' }),
-              field('前置代理（代理链，可选）', r, 'dialer', { placeholder: '底板的策略组名或节点名', list: dialerList })),
-            h('p', { class: 'hint' }, isBase
-              ? '底板的节点被过滤掉或改了名，它的策略组里会跟着去掉或改名。'
-              : '填了前置代理，这里的节点都会先经过它再连出去（输出为 dialer-proxy，需要 mihomo 内核）。典型用法：自建的落地节点填底板里一个只含机场节点的策略组。'),
+              field('前置代理（可选）', r, 'dialer', { placeholder: '底板的策略组名或节点名', list: dialerList })),
           ],
         });
       })),
     h('div', { class: 'row' },
-      h('button', { onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源'),
-      cfg.sources.length > 0 && h('button', { onclick: () => editSource() }, '管理节点来源')),
-    h('p', { class: 'hint', style: 'margin-top:16px' }, '节点来源是各订阅组共用的：已有来源的名称、链接等只在「节点来源」页修改，改一次所有用到它的订阅组都生效；是否启用、前缀、过滤和前置代理由各组自己设置。从这里移除只是不再使用，来源本身还在。'),
+      h('button', { disabled: cfg.sources.length === 0, title: cfg.sources.length === 0 ? '还没有节点来源' : null, onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源')),
   ];
 }
 // 来源内容的只读概述（订阅组里展示用）
@@ -542,25 +502,7 @@ function pickSourceDialog(p, use) {
     h('b', {}, s.name || '(未命名)'), sourceChips(s).filter(Boolean).map(c => h('span', { class: 'chip' }, c)),
     p.sources.some(r => r.source === s.id) && h('span', { class: 'chip' }, '本组已添加'))));
   draw();
-  dialog('添加节点来源', close => [
-    cfg.sources.length > 0
-      ? [h('p', { class: 'hint' }, `从已有的节点来源里选一个加到「${p.name}」，或者新建一个。来源本身（链接等）是共用的，以后修改要到「节点来源」页；前缀和过滤各组单独设置。`), pickEl]
-      : h('p', { class: 'hint' }, '还没有节点来源，先新建一个。'),
-    h('div', { class: 'row', style: 'margin-top:12px' },
-      h('button', { class: 'sm', onclick: () => { close(); newSourceDialog(p, 'remote', use); } }, '+ 新建机场订阅'),
-      h('button', { class: 'sm', onclick: () => { close(); newSourceDialog(p, 'manual', use); } }, '+ 新建手动节点')),
-  ], cfg.sources.length > 0 ? [{ label: '添加到本组', primary: true, onclick: close => { close(); use(picked); } }] : []);
-}
-// 在订阅组里直接新建来源：新来源还没被任何组引用，不存在「改了影响别的组」的问题，所以不必绕到「节点来源」页
-function newSourceDialog(p, kind, use) {
-  const s = blankSource(kind);
-  dialog(kind === 'manual' ? '新建手动节点' : '新建机场订阅', () => [
-    h('p', { class: 'hint' }, `新建的来源会加到「${p.name}」，同时出现在「节点来源」页，其他订阅组也可以选用。以后要修改它，到「节点来源」页。`),
-    sourceFields(s, null, true),
-  ], [{ label: '新建并添加到本组', primary: true, onclick: close => {
-    if (!(kind === 'manual' ? s.nodes : s.url).trim()) return alert(kind === 'manual' ? '请填写节点' : '请填写订阅链接');
-    close(); cfg.sources.push(s); use(s);
-  } }]);
+  dialog('添加节点来源', () => pickEl, [{ label: '添加到本组', primary: true, onclick: close => { close(); use(picked); } }]);
 }
 function newGroupDialog() {
   const remotes = cfg.sources.filter(s => s.kind === 'remote');
@@ -570,7 +512,6 @@ function newGroupDialog() {
     h('b', {}, s ? s.name || '(未命名)' : '稍后再选'), s && stateTag(s))));
   draw();
   dialog('新建订阅组', () => [
-    h('p', { class: 'hint' }, '每个订阅组以一个机场的完整配置为底板，再并入其他节点来源，输出一个订阅链接。'),
     field('名称', draft, 'name', { local: true }),
     remotes.length > 0 && [h('div', { class: 'sublabel', style: 'margin-top:12px' }, '底板机场'), pickEl],
   ], [{ label: '新建订阅组', primary: true, onclick: close => {
@@ -581,44 +522,86 @@ function newGroupDialog() {
 }
 
 function tabParser(p) {
+  // 格式化在服务端做（yaml.v3 往返，保留注释），YAML 有错时把错误提示出来
+  const format = async () => {
+    try {
+      const { text } = await api('POST', '/api/format-parser', { text: p.parser });
+      if (text !== p.parser) { p.parser = text; markDirty(); render(); }
+      toast('已格式化');
+    } catch (err) { toast(err.message); }
+  };
   return [
-    h('p', { class: 'hint' }, 'CFW Parsers 语法，在合并完成之后执行，可以改动输出里的任何部分：加规则、把其他来源的节点放进底板的某个策略组、改 DNS 等。支持 prepend-/append-/mix- 系列和 commands（= 覆盖、+ 插入、结尾 - 删除、(名称) 定位、[]proxyNames|正则）。'),
     field('', p, 'parser', { type: 'textarea', rows: 20, placeholder: PARSER_EXAMPLE }),
     h('div', { class: 'gap' }),
     h('div', { class: 'row' },
-      h('button', { class: 'sm', onclick: () => { if (!p.parser.trim() || confirm('覆盖当前内容？')) { p.parser = PARSER_EXAMPLE; markDirty(); render(); } } }, '填入示例'),
-      h('span', { class: 'hint', style: 'margin:0' }, '执行失败的命令会在「预览」的警告里列出。')),
+      h('button', { class: 'sm', onclick: format }, '格式化'),
+      h('button', { class: 'sm', onclick: () => { if (!p.parser.trim() || confirm('覆盖当前内容？')) { p.parser = PARSER_EXAMPLE; markDirty(); render(); } } }, '填入示例')),
   ];
+}
+
+// 缓存剩余 / 已过期的时长
+function fmtDur(ms) {
+  const m = Math.floor(Math.abs(ms) / 60000);
+  if (m < 1) return '不到 1 分钟';
+  if (m < 60) return `${m} 分钟`;
+  const hr = Math.floor(m / 60);
+  return hr < 24 ? `${hr} 小时 ${m % 60} 分钟` : `${Math.floor(hr / 24)} 天 ${hr % 24} 小时`;
+}
+
+// 预览里每个来源用的缓存：创建时间、过期时间和剩余时间（按服务端时钟换算）
+function cacheCell(s, preview) {
+  if (!s.fetchedAt || s.fetchedAt.startsWith('0001')) return s.noCache ? '—' : '不适用';
+  const left = Date.parse(s.expiresAt) - (Date.now() - preview.skew);
+  return h('div', { style: 'white-space:nowrap' },
+    h('div', {}, '创建 ' + fmtTime(s.fetchedAt)),
+    h('div', { class: left > 0 ? 'hint' : 'hint warn', style: 'margin:0' }, `过期 ${fmtTime(s.expiresAt)}（` + (left > 0 ? `剩余 ${fmtDur(left)}` : `已过期 ${fmtDur(left)}`) + '）'));
+}
+
+// 打开预览时如果还没有结果，就只用已有缓存生成一次（不请求上游）；底板没有缓存则保持「还没有预览」
+async function loadCachedPreview(p) {
+  const id = p.id, pending = { loading: true };
+  previews[id] = pending;
+  let res;
+  try {
+    res = await api('POST', '/api/preview', { config: cfg, profile: cfg.profiles.indexOf(p), cached: true });
+    res = res.noCache ? { noCache: true } : { ...res, draft: dirty, skew: Date.now() - Date.parse(res.now) };
+  } catch (err) { res = { noCache: true, cacheError: err.message }; }
+  if (previews[id] !== pending) return; // 期间已经手动生成过
+  previews[id] = res;
+  if (page === 'group' && tab === 'preview' && cur().id === id) render();
 }
 
 function tabPreview(p) {
   const preview = previews[p.id];
+  if (!preview) setTimeout(() => { if (!previews[p.id]) loadCachedPreview(p); });
   const run = async refresh => {
     if (busy) return;
     busy = true; toast('正在生成…');
     const id = p.id;
     try {
       // 把页面上现在的配置整份带过去，服务端只用它生成，不保存
-      previews[id] = await api('POST', '/api/preview', { config: cfg, profile: cfg.profiles.indexOf(p), refresh });
-      previews[id].draft = dirty;
-      toast(`生成成功，共 ${previews[id].total} 个节点`);
+      const res = await api('POST', '/api/preview', { config: cfg, profile: cfg.profiles.indexOf(p), refresh });
+      previews[id] = { ...res, draft: dirty, skew: Date.now() - Date.parse(res.now) };
+      toast(`生成成功，共 ${res.total} 个节点`);
     } catch (err) { previews[id] = { error: err.message }; toast('生成失败'); }
     try { srcStatus = await api('GET', '/api/source-status'); } catch { /* 状态只是辅助信息 */ }
     busy = false; render();
   };
   return [
-    h('p', { class: 'hint' }, '按客户端来拉取订阅链接时的同样流程生成一次。预览用的是页面上现在的内容，包括还没保存的修改；预览不会保存，订阅链接输出的内容要等点了「保存修改」才变。'),
     h('div', { class: 'row', style: 'margin-bottom:16px' },
       h('button', { class: 'primary', onclick: () => run(false) }, '生成预览'),
       h('button', { onclick: () => run(true) }, '跳过缓存重新拉取')),
-    !preview ? empty('还没有预览', '点「生成预览」查看这个订阅组最终输出的配置。')
+    !preview || preview.loading ? empty('正在读取缓存…')
+      : preview.noCache ? empty('还没有预览', preview.cacheError && `用缓存生成失败：${preview.cacheError}`)
       : preview.error ? h('div', { class: 'warnbox' }, '生成失败：' + preview.error) : [
-      preview.draft && dirty && h('div', { class: 'warnbox' }, '这份预览包含还没保存的修改。确认没问题后点右上角的「保存修改」，订阅链接才会输出同样的内容。'),
+      preview.draft && dirty && h('div', { class: 'warnbox' }, '包含未保存的修改'),
       preview.subs.length > 0 && h('div', { class: 'card' }, h('div', { class: 'tblwrap' }, h('table', {},
-        h('tr', {}, ['节点来源', '结果', '使用的 UA', '使用的链接'].map(t => h('th', {}, t))),
+        h('tr', {}, ['节点来源', '结果', '缓存', '使用的 UA', '使用的链接'].map(t => h('th', {}, t))),
         preview.subs.map(s => h('tr', {},
           h('td', {}, s.name, s.base && h('span', { class: 'chip base', style: 'margin-left:6px' }, '底板')),
-          h('td', {}, s.error ? h('span', { class: 'tag err', title: s.error }, (s.stale ? `失败，用缓存 ${s.used} 个：` : '失败：') + s.error) : h('span', { class: 'tag ok' }, `${s.used} / ${s.count} 个节点` + (s.hosts ? `，hosts ${s.hosts} 条` : ''))),
+          h('td', {}, s.noCache ? h('span', { class: 'tag' }, '没有缓存，未使用')
+            : s.error ? h('span', { class: 'tag err', title: s.error }, (s.stale ? `失败，用缓存 ${s.used} 个：` : '失败：') + s.error) : h('span', { class: 'tag ok' }, `${s.used} / ${s.count} 个节点` + (s.hosts ? `，hosts ${s.hosts} 条` : ''))),
+          h('td', {}, cacheCell(s, preview)),
           h('td', { class: 'clip', title: s.ua }, s.ua || '不适用'),
           h('td', { class: 'clip', title: s.url }, s.url || '不适用')))))),
       preview.warnings.length > 0 && h('div', { class: 'warnbox' }, preview.warnings.map(w => h('div', {}, w))),
@@ -640,8 +623,7 @@ function accessCard(p) {
   const all = accessLog[p.id] || [], shown = ui.accessAll ? all : all.slice(0, 15);
   const week = Date.now() - 7 * 864e5, fresh = all.filter(r => r.newIp && new Date(r.time) > week).length;
   return h('div', { class: 'card' }, h('h3', {}, '访问记录'),
-    h('p', { class: 'hint' }, '这个订阅链接最近被拉取的情况（最多保留 100 次）。可以看出各个客户端有没有在正常更新；出现不认识的 IP 或客户端，说明链接可能泄露了，可以在上面重置链接。部署在反向代理后面时，IP 取自 X-Forwarded-For。'),
-    fresh > 0 && h('div', { class: 'warnbox' }, `最近 7 天有 ${fresh} 次拉取来自此前没出现过的 IP（下面标了「新 IP」）。换了网络或设备属于正常情况，否则考虑重置链接。`),
+    fresh > 0 && h('div', { class: 'warnbox' }, `最近 7 天有 ${fresh} 次拉取来自新 IP`),
     accessLog[p.id] == null ? h('p', { class: 'hint', style: 'margin:0' }, '正在加载…')
       : all.length === 0 ? h('p', { class: 'hint', style: 'margin:0 0 12px' }, '还没有客户端拉取过这个链接。')
       : h('div', { class: 'tblwrap', style: 'margin-bottom:12px' }, h('table', {},
@@ -661,17 +643,14 @@ function tabMore(p) {
   return [
     h('div', { class: 'card' }, h('h3', {}, '订阅链接'),
       p.token ? [
-        h('p', { class: 'hint' }, '填入 Clash / mihomo 系客户端，输出为 Clash 格式。链接后加 ?refresh=1 可跳过缓存重新拉取上游。'),
         h('div', { class: 'row' }, h('input', { type: 'text', readonly: true, value: subLink(p), style: 'flex:1 1 300px', onfocus: e => e.target.select() }),
           h('button', { onclick: () => copyText(subLink(p), '已复制订阅链接') }, '复制'),
           h('button', { class: 'danger', onclick: async () => { if (!confirm('重置后旧链接立即失效，确定？')) return; if (dirty && !(await save())) return; cfg = normalize(await api('POST', '/api/token', { profile: cur().id })); render(); toast('已重置链接'); } }, '重置链接')),
       ] : h('p', { class: 'hint', style: 'margin:0' }, '保存修改后生成这个订阅组的订阅链接。')),
     accessCard(p),
     h('div', { class: 'card' }, h('h3', {}, '显示名称'),
-      h('p', { class: 'hint' }, '客户端里显示的配置名称。留空则使用订阅组名称。'),
       field('', p, 'fileName', { placeholder: p.name })),
     h('div', { class: 'card' }, h('h3', {}, '复制或删除'),
-      h('p', { class: 'hint' }, '复制会得到一个内容相同、链接不同的新订阅组，节点来源与原来的共用。删除在保存修改后生效，它的订阅链接随之失效。'),
       h('div', { class: 'row' },
         h('button', { onclick: () => {
           const c = clone(p); c.id = newID(); c.token = ''; c.name = p.name + ' 副本';
@@ -688,8 +667,7 @@ function sourcesPage() {
   return [
     h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '节点来源'), saveControls())),
     h('div', { class: 'content' },
-      h('p', { class: 'hint' }, '所有订阅组可以使用的节点来源。修改和删除只在这里进行；订阅组里可以选用已有的，也可以直接新建（新建的同样出现在这里）。链接、解锁地址在这里改一次，用到它的订阅组都生效；是否启用、前缀、过滤和谁做底板由各订阅组自己决定。'),
-      cfg.sources.length === 0 ? empty('还没有节点来源', '在这里添加机场订阅或手动节点，再到订阅组的「节点来源」页选用。')
+      cfg.sources.length === 0 ? empty('还没有节点来源')
         : h('div', { class: 'list' }, cfg.sources.map(s => {
           const users = usersOf(s.id), bases = cfg.profiles.filter(p => p.base === s.id);
           return item(s, {
@@ -702,8 +680,7 @@ function sourcesPage() {
               markDirty(); render();
             } }, '删除'),
             body: nameEl => [
-              h('div', { class: 'sublabel' }, users.length > 0 ? `正在使用它的订阅组：${quote(users)}` : '还没有订阅组使用它。到订阅组的「节点来源」页点「添加节点来源」选用。'),
-              stateLine(s),
+              users.length > 0 && h('div', { class: 'sublabel' }, `使用它的订阅组：${quote(users)}`),
               h('div', { class: 'grid' }, sourceFields(s, v => { nameEl.textContent = v || '(未命名)'; })),
             ],
           });
@@ -722,7 +699,6 @@ function settingsPage() {
     h('div', { class: 'content' },
       datalist('ua', UA_PRESETS),
       h('div', { class: 'card' }, h('h3', {}, '拉取与缓存'),
-        h('p', { class: 'hint' }, '缓存按「来源 + 链接 + UA」保存，引用同一个来源的订阅组共用：缓存时间内重复拉取不会再请求上游。上游拉取失败时，继续使用同一链接和 UA 上一次成功的结果。机场按 UA 决定返回什么内容，底板要拿到带策略组和规则的完整配置，UA 一般用 Clash 系客户端的。服务器需要经代理才能访问上游时，用环境变量 HTTP_PROXY / HTTPS_PROXY 配置。'),
         h('div', { class: 'grid' },
           field('上游订阅缓存时间（分钟，0 为每次都拉取）', cfg, 'cacheMinutes', { type: 'number', min: 0 }),
           field('建议客户端更新间隔（小时）', cfg, 'updateInterval', { type: 'number', min: 1 }),

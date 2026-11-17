@@ -82,6 +82,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/password", a.auth(a.handlePassword))
 	mux.HandleFunc("POST /api/token", a.auth(a.handleResetToken))
 	mux.HandleFunc("POST /api/preview", a.auth(a.handlePreview))
+	mux.HandleFunc("POST /api/format-parser", a.auth(a.handleFormatParser))
 	mux.HandleFunc("GET /api/source-status", a.auth(a.handleSourceStatus))
 	mux.HandleFunc("GET /api/access", a.auth(a.handleGetAccess))
 	mux.HandleFunc("DELETE /api/access", a.auth(a.handleClearAccess))
@@ -424,6 +425,22 @@ func clientUA(ua string) string {
 	return ua
 }
 
+// handleFormatParser 格式化 Parser 文本，不保存
+func (a *App) handleFormatParser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text string `json:"text"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	text, err := FormatParser(req.Text)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"text": text})
+}
+
 // handlePreview 用请求里带来的配置（前端当前的、可能还没保存的那份）模拟一次客户端拉取，不保存任何东西。
 // 这样可以先看改动的效果再决定要不要保存；保存才会影响真实的订阅链接。
 // 配置先过一遍和保存时相同的校验，所以预览通过的内容保存时也不会被拒绝。
@@ -432,6 +449,7 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 		Config  Config `json:"config"`
 		Profile int    `json:"profile"` // 订阅组在 Config.Profiles 里的下标：新建的订阅组可能还没有可靠的 ID
 		Refresh bool   `json:"refresh"`
+		Cached  bool   `json:"cached"` // 只用已有的缓存，不请求上游：打开预览页时自动展示
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -446,14 +464,27 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := &cfg.Profiles[req.Profile]
-	res, err := Build(cfg, *p, a.fetcher, req.Refresh)
+	mode := FetchAuto
+	switch {
+	case req.Refresh:
+		mode = FetchRefresh
+	case req.Cached:
+		mode = FetchCacheOnly
+	}
+	res, err := Build(cfg, *p, a.fetcher, mode)
+	if errors.Is(err, errNoCache) {
+		writeJSON(w, http.StatusOK, map[string]any{"noCache": true})
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// now 是服务端时间：前端据此换算缓存的剩余时间，不受浏览器时钟偏差影响
 	writeJSON(w, http.StatusOK, map[string]any{
 		"yaml": string(res.YAML), "subs": res.Subs, "warnings": res.Warnings,
 		"total": res.Total, "groups": res.Groups, "rules": res.Rules, "userinfo": res.Userinfo,
+		"cached": mode == FetchCacheOnly, "now": time.Now(),
 	})
 }
 
@@ -473,7 +504,11 @@ func (a *App) handleSub(w http.ResponseWriter, r *http.Request) {
 	ua := clientUA(r.UserAgent())
 	rec := AccessRecord{Time: time.Now(), IP: clientIP(r), UA: ua, Status: http.StatusOK}
 	defer func() { a.access.Add(p.ID, rec) }()
-	res, err := Build(cfg, *p, a.fetcher, r.URL.Query().Get("refresh") == "1")
+	mode := FetchAuto
+	if r.URL.Query().Get("refresh") == "1" {
+		mode = FetchRefresh
+	}
+	res, err := Build(cfg, *p, a.fetcher, mode)
 	if err != nil {
 		log.Printf("生成订阅失败: %v", err)
 		rec.Status = http.StatusInternalServerError

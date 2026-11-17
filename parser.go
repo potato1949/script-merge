@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
 	"strconv"
 	"strings"
@@ -63,6 +64,32 @@ func ApplyParser(root map[string]any, text string) ([]string, error) {
 		warns = append(warns, applyParserBody(root, body)...)
 	}
 	return warns, nil
+}
+
+// FormatParser 把 Parser 文本统一成 2 空格缩进。经 yaml.Node 往返，注释、引号和 {…} / […] 写法都保留，内容不变。
+func FormatParser(text string) (string, error) {
+	if strings.TrimSpace(text) == "" {
+		return "", nil
+	}
+	dec := yaml.NewDecoder(strings.NewReader(text))
+	var b strings.Builder
+	enc := yaml.NewEncoder(&b)
+	enc.SetIndent(2)
+	for {
+		var doc yaml.Node
+		if err := dec.Decode(&doc); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return "", fmt.Errorf("YAML 解析失败: %w", err)
+		}
+		if err := enc.Encode(&doc); err != nil {
+			return "", err
+		}
+	}
+	if err := enc.Close(); err != nil {
+		return "", err
+	}
+	return b.String(), nil
 }
 
 // parserBodies 兼容三种写法：直接写指令、`yaml:` 包裹、CFW 原版的 `parsers: [{yaml: ...}]`。

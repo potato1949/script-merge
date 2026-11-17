@@ -129,7 +129,7 @@ func TestBuildEndToEnd(t *testing.T) {
 	p.Parser = "yaml:\n  prepend-rules:\n    - DOMAIN,my.com,DIRECT\n  commands:\n    - dns.enable=false\n"
 
 	f := NewFetcher(t.TempDir())
-	res, err := Build(cfg, *p, f, false)
+	res, err := Build(cfg, *p, f, FetchAuto)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestBuildEndToEnd(t *testing.T) {
 
 	// 改了全局的解锁 UA：缓存键随之改变，会重新解锁并拉取
 	cfg.UnlockUserAgent = "Unlock/1.0"
-	if _, err := Build(cfg, *p, f, false); err != nil {
+	if _, err := Build(cfg, *p, f, FetchAuto); err != nil {
 		t.Fatal(err)
 	}
 	if got := seenUnlockUAs(); !reflect.DeepEqual(got, []string{chromeUA, "Unlock/1.0"}) {
@@ -225,7 +225,7 @@ func TestBuildEndToEnd(t *testing.T) {
 	// 上游挂掉后应回退到缓存（CacheMinutes=0 强制重新拉取）；缓存在磁盘上存过一轮，内容不变
 	upstream.Close()
 	cfg.CacheMinutes = 0
-	res2, err := Build(cfg, *p, NewFetcher(filepath.Dir(f.dir)), false)
+	res2, err := Build(cfg, *p, NewFetcher(filepath.Dir(f.dir)), FetchAuto)
 	if err != nil || res2.Total != 5 || !res2.Subs[0].Stale {
 		t.Fatalf("缓存回退失败: err=%v subs=%+v", err, res2)
 	}
@@ -257,7 +257,7 @@ func TestBuildBaseErrors(t *testing.T) {
 		if edit != nil {
 			edit(&cfg, p)
 		}
-		_, err := Build(cfg, *p, NewFetcher(t.TempDir()), false)
+		_, err := Build(cfg, *p, NewFetcher(t.TempDir()), FetchAuto)
 		return err
 	}
 	if err := build("/clash", nil); err != nil {
@@ -289,7 +289,7 @@ func TestFetchUsesProxy(t *testing.T) {
 	p := &cfg.Profiles[0]
 	addSource(&cfg, p, Source{ID: "aaaaaaaaaaaaaaaa", Name: "经代理", URL: "http://upstream.test/sub", UnlockURL: "http://upstream.test/unlock"}, SourceRef{Enabled: true})
 	p.Base = "aaaaaaaaaaaaaaaa"
-	res, err := Build(cfg, *p, NewFetcher(t.TempDir()), false)
+	res, err := Build(cfg, *p, NewFetcher(t.TempDir()), FetchAuto)
 	if err != nil || res.Total != 1 || res.Subs[0].Error != "" {
 		t.Fatalf("经代理拉取失败: err=%v res=%+v", err, res)
 	}
@@ -325,7 +325,7 @@ rules:
 	build := func(dialer string) (map[string]any, []string) {
 		t.Helper()
 		p.Sources[1].Dialer = dialer
-		res, err := Build(cfg, *p, f, false)
+		res, err := Build(cfg, *p, f, FetchAuto)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -202,3 +202,22 @@ func TestProxySummary(t *testing.T) {
 		t.Errorf("代理说明不符: %s", s)
 	}
 }
+
+// 格式化只统一缩进：注释、引号、流式写法保留，内容不变；YAML 有错时报错
+func TestFormatParser(t *testing.T) {
+	src := "# 注释\nyaml:\n    prepend-proxies:\n    -   name: Home   # 行尾\n        type: socks5\n    - {name: a, type: ss}\n    prepend-rules:\n      - 'DOMAIN,a.com,DIRECT'\n    commands:\n       - proxy-groups.(节点选择).proxies+[]proxyNames|家宽\n"
+	want := "# 注释\nyaml:\n  prepend-proxies:\n    - name: Home # 行尾\n      type: socks5\n    - {name: a, type: ss}\n  prepend-rules:\n    - 'DOMAIN,a.com,DIRECT'\n  commands:\n    - proxy-groups.(节点选择).proxies+[]proxyNames|家宽\n"
+	got, err := FormatParser(src)
+	if err != nil || got != want {
+		t.Fatalf("格式化结果 (%v):\n%s", err, got)
+	}
+	if again, _ := FormatParser(got); again != got {
+		t.Errorf("再格式化一次应不变:\n%s", again)
+	}
+	if got, err := FormatParser("  \n"); got != "" || err != nil {
+		t.Errorf("空内容 = %q, %v", got, err)
+	}
+	if _, err := FormatParser("yaml:\n  a: [1\n"); err == nil {
+		t.Error("YAML 有错时应报错")
+	}
+}
