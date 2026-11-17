@@ -90,6 +90,10 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 `Store.SetConfig` 在内容有变化时把被替换掉的那份存到 `DATA_DIR/history/`，只留最近 `maxHistory`（10）份。`POST /api/history` 恢复某一份，走 `importConfig`（令牌以那份历史为准），当前配置随之成为新的一份历史。界面上的覆盖性操作（套用模板、删除来源、导入）都靠它反悔，所以新增会改配置的服务端入口要走 `SetConfig`。
 
+### 程序版本（`version.go`）
+
+左栏底部显示的程序版本：`-ldflags "-X main.version=…"` 指定的优先，否则取 `debug.ReadBuildInfo` 里的 git 提交（`go build` 自动带上，`go run` 和 Docker 构建没有，显示「开发版」）。只在已登录时随 `GET /api/status` 返回，不对外暴露。和 `Config.Version`（配置结构版本）、`Config.Revision`（保存次数）是三回事。
+
 ### 导出导入（`transfer.go`）与访问记录（`access.go`）
 
 - `GET /api/export` 导出整份配置（含链接和令牌）；带 `?profile=` 时导出单个订阅组用于分享，**不含**链接、解锁地址、手填节点和令牌。`POST /api/import` 两种都收，也收旧版 `config.json`：先 `migrate` 再 `validateConfig`。整份导入是替换且保留文件里的令牌；单组导入是追加，ID 和令牌全部新发

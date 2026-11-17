@@ -43,6 +43,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var
 .gitem small { font-size: 12px; color: var(--muted); }
 .rail .gnew { color: var(--accent); margin-top: 4px; }
 .railnav { margin-top: auto; padding-top: 16px; display: flex; flex-direction: column; gap: 2px; }
+.ver { font-size: 12px; color: var(--muted); padding: 10px 10px 0; font-variant-numeric: tabular-nums; }
 
 /* ---------- 工作区 ---------- */
 main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
@@ -171,6 +172,7 @@ dialog label.f + label.f { margin-top: 12px; }
   .gitem small { display: none; }
   .rail .gnew { margin-top: 0; }
   .railnav { margin-top: 6px; padding-top: 0; }
+  .ver { padding-top: 6px; }
   main { padding: 0 16px 60px; }
   .ws-head { padding-top: 14px; }
   .ws-top h2, .ws-top input.title-input { font-size: 23px; }
@@ -222,6 +224,7 @@ const KINDS = {
 // ---------- 状态 ----------
 const app = document.getElementById('app');
 let cfg = null, dirty = false, envPassword = false, busy = false;
+let build = {};                // 程序版本（服务端的 BuildInfo），登录后才有
 let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / rulesrc / templates / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
 const accessLog = {};          // 订阅组 ID → 访问记录（加载中为 null）
@@ -398,7 +401,7 @@ function normalize(c) {
 }
 async function boot() {
   const st = await (await fetch('/api/status')).json();
-  envPassword = st.envPassword;
+  envPassword = st.envPassword; build = st.build || {};
   if (st.authed) { [cfg, ruleNames, srcStatus] = await Promise.all([api('GET', '/api/config').then(normalize), api('GET', '/api/rule-names'), api('GET', '/api/source-status')]); snapshots = null; dirty = false; render(); }
   else renderAuth(!st.initialized);
 }
@@ -444,7 +447,15 @@ function rail() {
       h('button', { class: on('rulesrc') ? 'on' : '', onclick: () => go('rulesrc') }, '规则仓库'),
       h('button', { class: on('templates') ? 'on' : '', onclick: () => go('templates') }, '模板'),
       h('button', { class: on('settings') ? 'on' : '', onclick: () => go('settings') }, '全局设置'),
-      h('button', { onclick: async () => { if (dirty && !confirm('有未保存的修改，确定退出登录？')) return; dirty = false; await api('POST', '/api/logout'); boot(); } }, '退出登录')));
+      h('button', { onclick: async () => { if (dirty && !confirm('有未保存的修改，确定退出登录？')) return; dirty = false; await api('POST', '/api/logout'); boot(); } }, '退出登录')),
+    versionLine());
+}
+// 左栏底部的程序版本。悬停看完整提交号和提交时间
+function versionLine() {
+  const b = build;
+  const title = !b.version ? '没有版本信息：用 go run 启动，或构建时没带 git 信息也没指定版本号'
+    : [b.commit && '提交 ' + b.commit, b.time && '提交时间 ' + fmtTime(b.time), b.modified && '构建时工作区有未提交的修改'].filter(Boolean).join('\n') || null;
+  return h('div', { class: 'ver', title }, '版本 ' + (b.version || '开发版') + (b.modified ? '（已修改）' : ''));
 }
 function saveControls() {
   const d = h('span', { id: 'dirty', class: 'dirty' }, '有未保存的修改');

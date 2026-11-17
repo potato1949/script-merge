@@ -60,7 +60,7 @@ func main() {
 		sessions:    map[string]time.Time{},
 	}
 	addr := ":" + env("PORT", "8080")
-	log.Printf("script-merge 已启动，监听 %s，数据目录 %s", addr, dataDir)
+	log.Printf("script-merge %s 已启动，监听 %s，数据目录 %s", buildInfo, addr, dataDir)
 	log.Print(proxySummary())
 	srv := &http.Server{Addr: addr, Handler: app.routes(), ReadHeaderTimeout: 10 * time.Second}
 	log.Fatal(srv.ListenAndServe())
@@ -169,12 +169,18 @@ func (a *App) startSession(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleStatus 不需要登录。程序版本只给已登录的人看，不对外暴露。
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{
+	authed := a.authed(r)
+	st := map[string]any{
 		"initialized": a.initialized(),
-		"authed":      a.authed(r),
+		"authed":      authed,
 		"envPassword": a.envPassword != "",
-	})
+	}
+	if authed {
+		st["build"] = buildInfo
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func validPassword(w http.ResponseWriter, pw string) bool {

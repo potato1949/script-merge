@@ -22,6 +22,7 @@
 | `access.go` | 订阅链接的访问记录、客户端 IP 的判定 |
 | `history.go` | 配置的历史版本：保存时留下被替换的那份、列出、恢复 |
 | `rulenames.go` | 规则仓库的校验、从 GitHub 拉取规则清单、清单的保存 |
+| `version.go` | 程序版本：编译时指定的版本号，或构建信息里的 git 提交 |
 | `store.go` | 数据模型、JSON 持久化、旧配置迁移、密码哈希、默认配置与内置模板 |
 | `fetch.go` | 拉取上游订阅（解锁、代理）、按链接 + UA 的缓存、订阅内容解析入口 |
 | `uri.go` | 分享链接（ss / vmess / trojan / vless / hysteria2）→ Clash 节点 |
@@ -33,6 +34,7 @@
 | `transfer_test.go` | 测试：导出导入 |
 | `access_test.go` | 测试：访问记录、客户端 IP |
 | `rulenames_test.go` | 测试：规则清单的拉取与保存、规则仓库的校验 |
+| `version_test.go` | 测试：程序版本只对已登录的人返回、指定的版本号优先 |
 
 ## 数据模型
 
@@ -227,7 +229,7 @@ Config
 | 方法 路径 | 认证 | 说明 |
 | --- | --- | --- |
 | `GET /` | 否 | 管理页面 |
-| `GET /api/status` | 否 | `{initialized, authed, envPassword}` |
+| `GET /api/status` | 否 | `{initialized, authed, envPassword, build}`。`build` 是程序版本 `{version, commit, time, modified}`，只在已登录时返回 |
 | `POST /api/setup` | 否 | `{password}`，仅在尚未设置密码时可用 |
 | `POST /api/login` | 否 | `{password}` |
 | `POST /api/logout` | 否 | |
@@ -360,6 +362,7 @@ go vet ./... && gofmt -l .
 - `TestSeedTemplatesAreConsistent`：内置策略组模板和规则模板任意组合都没有悬空引用
 - `TestSaveConflict` / `TestHistory`：拿着旧版本号保存被拒绝、`force` 能覆盖；内容有变化才留历史、只留最近 10 份、恢复后内容和令牌回到当时、不认列表之外的 ID
 - `TestPreviewUnsavedAndSourceStatus`：预览按请求里未保存的配置生成且不落盘；来源状态在成功、失败（保留上次成功的信息）、重启后的取值
+- `TestBuildInfo`：程序版本只对已登录的人返回；`-X main.version` 指定的版本号优先于提交号
 - `TestRuleNames` / `TestValidateRuleSources`：两种目录结构下清单的筛选和排序、未保存的来源也能拉、各种失败不动已有清单、限流提示、`GITHUB_TOKEN`、清单落盘和清理；保存配置时规则仓库的规范化和拒绝条件
 
 ## 已知限制
