@@ -37,7 +37,7 @@
 | `uri.go` | 分享链接（ss / vmess / trojan / vless / hysteria2）→ Clash 节点 |
 | `parser.go` | CFW Parsers 语法实现、正则封装 |
 | `access.go` | 订阅链接的访问记录、客户端 IP 的判定 |
-| `version.go` | 程序版本：编译时指定的版本号，或构建信息里的 git 提交 |
+| `version.go` | 程序版本：编译时指定的版本号，或构建信息里的 git tag / 提交 |
 | `web/index.html` | 管理界面 |
 | `build_test.go` | 测试：端到端构建、底板不可用时报错、上游走代理、前置代理 |
 | `api_test.go` | 测试：旧配置作废、配置校验（来源、引用、底板）、保存冲突、预览不保存与来源拉取状态、只用缓存的预览 |
@@ -286,7 +286,30 @@ go vet ./... && gofmt -l .
 - `TestSaveConflict` / `TestPreviewUnsavedAndSourceStatus`：拿着旧版本号保存被拒绝、`force` 能覆盖；预览不落盘；来源状态在成功、失败、重启后的取值
 - `TestPreviewCachedOnly`：只用缓存的预览不请求上游；底板没缓存返回 `noCache`；其他来源没缓存只做标记；过期的缓存照用；缓存的创建 / 过期时间
 - `TestNodeHosts` / `TestParseSubscriptionKeepsDoc`：hosts 的查找与合并；上游配置去掉节点后整份留下、非字符串的键能存进缓存
-- `TestAccessLog` / `TestClientIP` / `TestBuildInfo` / `TestCommands` / `TestParserOrder` / `TestURIs`：见各自的注释
+- `TestAccessLog` / `TestClientIP` / `TestBuildInfo` / `TestTagVersion` / `TestCommands` / `TestParserOrder` / `TestURIs`：见各自的注释
+
+## 版本号
+
+程序版本是 `主.次.修订`（`vX.Y.Z`），从 v1.0.0 开始。版本号只来自 `main` 上带注释的 git tag，代码里不写死。
+
+| 加哪一位 | 什么时候 | 例子 |
+| --- | --- | --- |
+| 主版本 X | 升级后用户要手动处理的不兼容变化 | `configVersion` 加一（旧配置作废）；订阅链接格式变了、客户端里的旧链接失效；去掉已有功能、环境变量或接口；Parser 语法不再兼容 |
+| 次版本 Y | 向下兼容的新功能或行为变化 | 新的来源类型、输出格式；新配置字段（零值等于原来的行为）；界面上的新功能 |
+| 修订 Z | 不加功能的修正 | bug 修复、界面文案和样式微调、性能、依赖的小版本升级 |
+
+- 加主版本 / 次版本时后面的位归零；一次发布里有多种变化时按最高的那一档算
+- 只改文档、测试、开发工具（构建出的程序不变）不发新版本
+- `cacheFormat` 加一不算不兼容（旧缓存自动视为过期），按同一次改动的其他内容定
+- 不是每个提交都打 tag，攒到要部署 / 发布时再打。打之前在 `main` 上跑完 `go vet`、`gofmt -l`、`go test`
+- tag 说明写这一版的变化摘要（中文），它就是更新记录
+
+```bash
+git tag -a v1.1.0 -m "v1.1.0：……"
+git push origin v1.1.0
+```
+
+程序里显示的版本（`version.go`）：`-ldflags "-X main.version=…"` 指定的优先；否则当前提交正好在 tag 上时，用 `go build` 自动写进构建信息的 tag（Go 1.24 起）；再否则显示提交号前 7 位。Docker 构建拿不到 `.git`，由 `docker-compose.yml` 把环境变量 `VERSION` 作为构建参数传进去，用 `git describe --tags --always --dirty`，tag 之后还有提交时显示成 `v1.1.0-3-gabc1234`。
 
 ## 已知限制
 

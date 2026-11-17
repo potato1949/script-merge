@@ -1,6 +1,10 @@
 services:
   script-merge:
-    build: .
+    build:
+      context: .
+      args:
+        # 程序版本，构建时传入：VERSION=$(git describe --tags --always --dirty) docker compose up -d --build
+        VERSION: ${VERSION:-}
     container_name: script-merge
     restart: unless-stopped
     ports:

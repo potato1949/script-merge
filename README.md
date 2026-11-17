@@ -41,10 +41,10 @@ docker compose up -d --build
 go build -o script-merge . && ./script-merge
 ```
 
-登录后左栏底部显示程序版本（悬停可看完整提交号和提交时间），启动日志里也有。在 git 仓库里 `go build` 会自动带上当前提交；`go run .` 显示「开发版」。Docker 构建时拿不到 `.git`，需要的话自己传版本号：
+登录后左栏底部显示程序版本（悬停可看完整提交号和提交时间），启动日志里也有。版本号是 git tag（`v1.0.0` 这样的三段式，规则见 [开发文档](docs/DEVELOPMENT.md#版本号)）。在 git 仓库里 `go build`：当前提交正好打了 tag 就显示 tag，否则显示提交号；`go run .` 显示「开发版」。Docker 构建时拿不到 `.git`，需要的话通过环境变量传版本号：
 
 ```bash
-docker compose build --build-arg VERSION=$(git describe --always --dirty) && docker compose up -d
+VERSION=$(git describe --tags --always --dirty) docker compose up -d --build
 ```
 
 也可以用 `go build -ldflags "-X main.version=v1.2.0"` 指定任意版本号，它优先于提交号。

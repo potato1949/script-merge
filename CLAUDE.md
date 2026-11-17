@@ -87,7 +87,9 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 程序版本（`version.go`）
 
-左栏底部显示的程序版本：`-ldflags "-X main.version=…"` 指定的优先，否则取 `debug.ReadBuildInfo` 里的 git 提交（`go build` 自动带上，`go run` 和 Docker 构建没有，显示「开发版」）。只在已登录时随 `GET /api/status` 返回。和 `Config.Version`（配置结构版本）、`Config.Revision`（保存次数）是三回事。
+左栏底部显示的程序版本：`-ldflags "-X main.version=…"` 指定的优先，否则取 `debug.ReadBuildInfo` 里的 tag（当前提交正好在 tag 上时）或 git 提交（`go build` 自动带上，`go run` 和 Docker 构建没有，显示「开发版」）。
+
+版本号是 `main` 上带注释的 git tag `vX.Y.Z`（从 v1.0.0 开始），变更规则见 `docs/DEVELOPMENT.md` 的「版本号」：不兼容（如 `configVersion` 加一）加主版本，新功能加次版本，修复加修订号；只改文档 / 测试不发版。只在用户要求时打 tag。只在已登录时随 `GET /api/status` 返回。和 `Config.Version`（配置结构版本）、`Config.Revision`（保存次数）是三回事。
 
 ### 访问记录（`access.go`）
 

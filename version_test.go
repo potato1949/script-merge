@@ -29,3 +29,21 @@ func TestBuildInfo(t *testing.T) {
 		t.Errorf("没有版本信息时: %q", b.String())
 	}
 }
+
+// 只有正好在 tag 上的构建才把 tag 当版本号；伪版本和开发版回退到提交号。
+func TestTagVersion(t *testing.T) {
+	for in, want := range map[string]string{
+		"v1.0.0":                               "v1.0.0",
+		"v1.0.0+dirty":                         "v1.0.0",
+		"v1.2.0-rc.1":                          "v1.2.0-rc.1",
+		"v1.0.1-0.20261117083000-16132f3abcde": "",
+		"v1.0.1-0.20261117083000-16132f3abcde+dirty": "",
+		"v1.2.0-rc.1.0.20261117083000-16132f3abcde":  "",
+		"(devel)": "",
+		"":        "",
+	} {
+		if got := tagVersion(in); got != want {
+			t.Errorf("tagVersion(%q) = %q，应为 %q", in, got, want)
+		}
+	}
+}
