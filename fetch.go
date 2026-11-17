@@ -29,37 +29,80 @@ const (
 	failBackoff      = 30 * time.Second // 拉取失败后，同一链接 + UA 在这段时间内不再重试
 )
 
-// cacheEntry 是某个订阅以某个「链接 + UA」拉取到的结果。
+// cacheFormat 是缓存内容的格式版本。旧格式的缓存（缺少后来加的字段）视为已过期，但拉取失败时仍可作为旧缓存使用。
+//
+//	2：加入上游的 hosts、fake-ip-filter、策略组、规则和 rule-providers
+//	3：改为保存上游 Clash 配置里节点以外的全部内容（底板机场要用到完整配置）
+const cacheFormat = 3
+
+// cacheEntry 是某个来源以某个「链接 + UA」拉取到的结果。
 type cacheEntry struct {
-	Key       string           `json:"key"`
-	SubID     string           `json:"subId"`
-	Proxies   []map[string]any `json:"proxies"`
-	Userinfo  string           `json:"userinfo"`
-	FetchedAt time.Time        `json:"fetchedAt"`
+	Format    int       `json:"format"`
+	Key       string    `json:"key"`
+	SubID     string    `json:"subId"`
+	Userinfo  string    `json:"userinfo"`
+	FetchedAt time.Time `json:"fetchedAt"`
+	upstream
 }
 
-// SubStatus 描述一次构建中某个订阅的状态。
+// upstream 是解析后的上游内容。分享链接列表只有节点；Clash YAML 还有 Doc：
+// 去掉 proxies 之后的整份配置（策略组、规则、rule-providers、DNS、hosts 等），作为底板时原样输出。
+type upstream struct {
+	Proxies []map[string]any `json:"proxies"`
+	Doc     map[string]any   `json:"doc,omitempty"`
+}
+
+// groups 是上游配置里的策略组（只要带名字的）。
+func (u *upstream) groups() []map[string]any { return mapsOf(u.Doc["proxy-groups"], true) }
+
+// hosts 和 fakeIPFilter 是上游配置里的 hosts 与 dns.fake-ip-filter，节点地址经 hosts 映射时要用（见 nodeHosts）。
+func (u *upstream) hosts() map[string]any {
+	h, _ := u.Doc["hosts"].(map[string]any)
+	return h
+}
+
+func (u *upstream) fakeIPFilter() []string {
+	dns, _ := u.Doc["dns"].(map[string]any)
+	return stringsOf(dns["fake-ip-filter"])
+}
+
+// SubStatus 描述一次构建中某个来源的状态。
 type SubStatus struct {
 	Index     int       `json:"index"` // 在订阅组的来源列表里的下标
 	ID        string    `json:"id"`    // 来源 ID
 	Name      string    `json:"name"`
+	Base      bool      `json:"base"`  // 是不是底板机场
 	URL       string    `json:"url"`   // 本次实际使用的上游链接
 	UA        string    `json:"ua"`    // 本次实际使用的 UA
 	Count     int       `json:"count"` // 拉取到的节点数（过滤前）
 	Used      int       `json:"used"`  // 过滤后实际使用的节点数
 	Error     string    `json:"error,omitempty"`
-	Stale     bool      `json:"stale"` // 拉取失败，使用了旧缓存
+	Stale     bool      `json:"stale"`           // 拉取失败，使用了旧缓存
+	Hosts     int       `json:"hosts,omitempty"` // 带过来的上游 hosts 条数（非底板来源的节点地址经 hosts 映射时才有）
 	FetchedAt time.Time `json:"fetchedAt"`
 }
 
 // SourceState 是一个节点来源最近一次实际请求上游的结果（命中缓存的不算）。
-// 透传 UA 的来源每个 UA 各拉各的，这里只记最近的那一次。只在内存里：重启后从磁盘缓存恢复成功的那部分。
+// 只在内存里：重启后从磁盘缓存恢复成功的那部分。
 type SourceState struct {
 	Time     time.Time `json:"time"`               // 最近一次请求上游的时间
 	Error    string    `json:"error,omitempty"`    // 最近一次请求失败的原因，成功则为空
 	OKTime   time.Time `json:"okTime,omitzero"`    // 最近一次成功的时间
 	Count    int       `json:"count"`              // 最近一次成功拿到的节点数
 	Userinfo string    `json:"userinfo,omitempty"` // 最近一次成功时上游的 Subscription-Userinfo（流量、到期时间）
+	// 最近一次成功时上游带的策略组名和规则条数：界面上说明底板里有什么、给前置代理提供候选
+	Groups []string `json:"groups,omitempty"`
+	Rules  int      `json:"rules,omitempty"`
+}
+
+// stateOf 是一份成功拉取的结果对应的 SourceState。
+func stateOf(e *cacheEntry) SourceState {
+	rules, _ := e.Doc["rules"].([]any)
+	st := SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo, Rules: len(rules)}
+	for _, g := range e.groups() {
+		st.Groups = append(st.Groups, fmt.Sprint(g["name"]))
+	}
+	return st
 }
 
 type failure struct {
@@ -95,7 +138,7 @@ func NewFetcher(dataDir string) *Fetcher {
 		}
 		f.cache[e.Key] = &e
 		if e.FetchedAt.After(f.state[e.SubID].OKTime) {
-			f.state[e.SubID] = SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo}
+			f.state[e.SubID] = stateOf(&e)
 		}
 	}
 	return f
@@ -138,11 +181,11 @@ func (f *Fetcher) store(e *cacheEntry) {
 	defer f.mu.Unlock()
 	f.cache[e.Key] = e
 	delete(f.fails, e.Key)
-	f.state[e.SubID] = SourceState{Time: e.FetchedAt, OKTime: e.FetchedAt, Count: len(e.Proxies), Userinfo: e.Userinfo}
+	f.state[e.SubID] = stateOf(e)
 	if b, err := json.Marshal(e); err == nil {
 		_ = os.WriteFile(filepath.Join(f.dir, e.Key+".json"), b, 0o600)
 	}
-	// 透传 UA 时缓存份数由客户端决定，超出上限就淘汰最旧的
+	// 改过链接、UA 后旧的缓存还在，超出上限就淘汰最旧的
 	for {
 		var oldest *cacheEntry
 		n := 0
@@ -166,7 +209,7 @@ func (f *Fetcher) store(e *cacheEntry) {
 
 // Get 以给定的链接和 UA 拉取订阅；unlockUA 是访问解锁地址用的 UA。
 // 缓存未过期时直接返回缓存；拉取失败时返回 (同一链接 + UA 的旧缓存或 nil, err)。
-// 不会回退到其他链接 / UA 的结果：不同 UA 拿到的节点可能不同，某个 UA 失败就是失败。
+// 不会回退到其他链接 / UA 的结果：不同 UA 拿到的内容可能不同，某个 UA 失败就是失败。
 func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, force bool) (*cacheEntry, error) {
 	key := cacheKey(sub.ID, url, ua, sub.UnlockURL, unlockUA)
 	l := f.keyLock(key)
@@ -178,14 +221,14 @@ func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, f
 	f.mu.Unlock()
 
 	if !force {
-		if cached != nil && time.Since(cached.FetchedAt) < ttl {
+		if cached != nil && cached.Format == cacheFormat && time.Since(cached.FetchedAt) < ttl {
 			return cached, nil
 		}
 		if fail.err != nil && time.Since(fail.at) < failBackoff {
 			return cached, fail.err
 		}
 	}
-	proxies, userinfo, err := fetchSubscription(url, ua, sub.UnlockURL, unlockUA)
+	up, userinfo, err := fetchSubscription(url, ua, sub.UnlockURL, unlockUA)
 	if err != nil {
 		f.mu.Lock()
 		f.fails[key] = failure{time.Now(), err}
@@ -195,7 +238,7 @@ func (f *Fetcher) Get(sub Source, url, ua, unlockUA string, ttl time.Duration, f
 		f.mu.Unlock()
 		return cached, err
 	}
-	e := &cacheEntry{Key: key, SubID: sub.ID, Proxies: proxies, Userinfo: userinfo, FetchedAt: time.Now()}
+	e := &cacheEntry{Format: cacheFormat, Key: key, SubID: sub.ID, Userinfo: userinfo, FetchedAt: time.Now(), upstream: *up}
 	f.store(e)
 	return e, nil
 }
@@ -230,7 +273,7 @@ func proxySummary() string {
 	return "上游拉取走代理：" + strings.Join(parts, "，")
 }
 
-func fetchSubscription(url, ua, unlockURL, unlockUA string) ([]map[string]any, string, error) {
+func fetchSubscription(url, ua, unlockURL, unlockUA string) (*upstream, string, error) {
 	// 没有自定义 Transport，落在 http.DefaultTransport 上，它会读 HTTP_PROXY / HTTPS_PROXY / NO_PROXY。
 	// 以后换成自定义 Transport 时要带上 Proxy: http.ProxyFromEnvironment，否则代理失效（TestFetchUsesProxy 会发现）。
 	client := &http.Client{Timeout: 30 * time.Second}
@@ -267,27 +310,23 @@ func fetchSubscription(url, ua, unlockURL, unlockUA string) ([]map[string]any, s
 	if err != nil {
 		return nil, "", fmt.Errorf("读取订阅失败: %w", err)
 	}
-	proxies, err := parseSubscription(body)
+	up, err := parseSubscription(body)
 	if err != nil {
 		return nil, "", err
 	}
-	return proxies, resp.Header.Get("Subscription-Userinfo"), nil
+	return up, resp.Header.Get("Subscription-Userinfo"), nil
 }
 
 // parseSubscription 支持 Clash YAML 以及 base64 / 明文的分享链接列表。
-func parseSubscription(body []byte) ([]map[string]any, error) {
-	var doc struct {
-		Proxies []map[string]any `yaml:"proxies"`
-	}
-	if err := yaml.Unmarshal(body, &doc); err == nil && len(doc.Proxies) > 0 {
-		var out []map[string]any
-		for _, p := range doc.Proxies {
-			if name, _ := p["name"].(string); name != "" {
-				out = append(out, p)
-			}
-		}
-		if len(out) > 0 {
-			return out, nil
+// YAML 除了节点，把其余内容整份留在 Doc 里（键统一转成字符串，才能存进 JSON 缓存）。
+func parseSubscription(body []byte) (*upstream, error) {
+	var doc map[string]any
+	if err := yaml.Unmarshal(body, &doc); err == nil {
+		up := &upstream{Proxies: mapsOf(doc["proxies"], true)}
+		if len(up.Proxies) > 0 {
+			delete(doc, "proxies")
+			up.Doc = stringKeys(doc).(map[string]any)
+			return up, nil
 		}
 	}
 	text := strings.TrimSpace(string(body))
@@ -297,9 +336,57 @@ func parseSubscription(body []byte) ([]map[string]any, error) {
 		}
 	}
 	if proxies := parseURIList(text); len(proxies) > 0 {
-		return proxies, nil
+		return &upstream{Proxies: proxies}, nil
 	}
 	return nil, errors.New("订阅内容中没有可识别的节点（需要 Clash YAML 或分享链接列表）")
+}
+
+// stringKeys 把 YAML 里键不全是字符串的对象（yaml.v3 解析成 map[any]any）转成 map[string]any。
+func stringKeys(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, x := range t {
+			t[k] = stringKeys(x)
+		}
+		return t
+	case map[any]any:
+		m := make(map[string]any, len(t))
+		for k, x := range t {
+			m[fmt.Sprint(k)] = stringKeys(x)
+		}
+		return m
+	case []any:
+		for i, x := range t {
+			t[i] = stringKeys(x)
+		}
+	}
+	return v
+}
+
+// mapsOf 取出列表里的对象；named 为真时只要带 name 的。
+func mapsOf(v any, named bool) []map[string]any {
+	list, _ := v.([]any)
+	var out []map[string]any
+	for _, it := range list {
+		m, _ := it.(map[string]any)
+		if name, _ := m["name"].(string); m == nil || (named && name == "") {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// stringsOf 取出列表里的非空字符串。
+func stringsOf(v any) []string {
+	list, _ := v.([]any)
+	var out []string
+	for _, it := range list {
+		if s, ok := it.(string); ok && strings.TrimSpace(s) != "" {
+			out = append(out, strings.TrimSpace(s))
+		}
+	}
+	return out
 }
 
 func decodeBase64(s string) (string, bool) {

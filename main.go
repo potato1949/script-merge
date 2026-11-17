@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,7 +31,6 @@ type App struct {
 	store       *Store
 	fetcher     *Fetcher
 	access      *AccessLog
-	ruleNames   *RuleNameStore
 	envPassword string // 来自 ADMIN_PASSWORD；非空时网页端不可修改密码
 
 	mu       sync.Mutex
@@ -55,7 +55,6 @@ func main() {
 		store:       store,
 		fetcher:     NewFetcher(dataDir),
 		access:      OpenAccessLog(dataDir, 2*time.Second),
-		ruleNames:   OpenRuleNames(dataDir),
 		envPassword: os.Getenv("ADMIN_PASSWORD"),
 		sessions:    map[string]time.Time{},
 	}
@@ -83,15 +82,9 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/password", a.auth(a.handlePassword))
 	mux.HandleFunc("POST /api/token", a.auth(a.handleResetToken))
 	mux.HandleFunc("POST /api/preview", a.auth(a.handlePreview))
-	mux.HandleFunc("GET /api/history", a.auth(a.handleGetHistory))
-	mux.HandleFunc("POST /api/history", a.auth(a.handleRestoreHistory))
 	mux.HandleFunc("GET /api/source-status", a.auth(a.handleSourceStatus))
-	mux.HandleFunc("GET /api/export", a.auth(a.handleExport))
-	mux.HandleFunc("POST /api/import", a.auth(a.handleImport))
 	mux.HandleFunc("GET /api/access", a.auth(a.handleGetAccess))
 	mux.HandleFunc("DELETE /api/access", a.auth(a.handleClearAccess))
-	mux.HandleFunc("GET /api/rule-names", a.auth(a.handleGetRuleNames))
-	mux.HandleFunc("POST /api/rule-names", a.auth(a.handlePullRuleNames))
 	mux.HandleFunc("GET /sub/{token}", a.handleSub)
 	return mux
 }
@@ -268,16 +261,7 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 // validateConfig 校验并规范化前端提交的配置。tokens 是现有订阅组 ID → 令牌。
 func validateConfig(c *Config, tokens map[string]string) error {
-	var tmp any
-	if err := yaml.Unmarshal([]byte(c.BaseConfig), &tmp); err != nil {
-		return errors.New("基础配置不是合法的 YAML: " + err.Error())
-	}
-	if _, ok := tmp.(map[string]any); !ok && strings.TrimSpace(c.BaseConfig) != "" {
-		return errors.New("基础配置必须是 YAML 对象")
-	}
 	c.Version = configVersion
-	c.LegacyToken, c.LegacyFileName, c.LegacySubscriptions, c.LegacyCustomProxies = "", "", nil, ""
-	c.LegacyGroups, c.LegacyRulesBefore, c.LegacyRuleSets, c.LegacyRulesAfter, c.LegacyParser = nil, "", nil, "", ""
 	if len(c.Profiles) == 0 {
 		return errors.New("至少需要保留一个订阅组")
 	}
@@ -287,7 +271,7 @@ func validateConfig(c *Config, tokens map[string]string) error {
 			return errors.New("全局设置里的 UA 不能超过 256 个字符，也不能包含换行等控制字符")
 		}
 	}
-	// ID 只接受服务端生成的格式（前端新建来源、模板时也按这个格式生成，以便保存前就能互相引用）：
+	// ID 只接受服务端生成的格式（前端新建来源、订阅组时也按这个格式生成，以便保存前就能互相引用）：
 	// 来源 ID 用作缓存文件名，订阅组 ID 用于保留令牌。格式不对或重复的一律重新生成
 	ids := map[string]bool{}
 	fixID := func(id *string) {
@@ -296,28 +280,11 @@ func validateConfig(c *Config, tokens map[string]string) error {
 		}
 		ids[*id] = true
 	}
-	for pi := range c.Profiles {
-		p := &c.Profiles[pi]
-		fixID(&p.ID)
-		p.Token = firstNonEmpty(tokens[p.ID], randHex(16)) // 令牌只能通过重置接口修改
-		if strings.TrimSpace(p.Name) == "" {
-			p.Name = "订阅组 " + strconv.Itoa(pi+1)
-		}
-		if err := yaml.Unmarshal([]byte(p.Parser), &tmp); err != nil {
-			return errors.New("订阅组「" + p.Name + "」的 Parser 不是合法的 YAML: " + err.Error())
-		}
-		p.LegacyCustomProxies, p.LegacySubscriptions = "", nil
-		if p.Groups == nil {
-			p.Groups = []Group{}
-		}
-		if p.RuleSets == nil {
-			p.RuleSets = []RuleSet{}
-		}
-	}
 	if c.Sources == nil {
 		c.Sources = []Source{}
 	}
 	sourceIDs := map[string]string{} // 提交时的来源 ID → 规范化后的 ID，用来修正订阅组里的引用
+	kinds := map[string]string{}     // 规范化后的来源 ID → 类型
 	for i := range c.Sources {
 		s := &c.Sources[i]
 		old := s.ID
@@ -329,27 +296,34 @@ func validateConfig(c *Config, tokens map[string]string) error {
 			s.Name = "来源 " + strconv.Itoa(i+1)
 		}
 		if s.Kind == "manual" {
-			s.URL, s.UnlockURL, s.UAMode = "", "", ""
+			s.URL, s.UnlockURL = "", ""
 			if _, err := parseCustomProxies(s.Nodes); err != nil {
 				return errors.New("节点来源「" + s.Name + "」: " + err.Error())
 			}
-			continue
-		}
-		s.Kind, s.Nodes = "remote", ""
-		for _, u := range []string{s.URL, s.UnlockURL} {
-			if u = strings.TrimSpace(u); u == "" {
-				continue
+		} else {
+			s.Kind, s.Nodes = "remote", ""
+			for _, u := range []string{s.URL, s.UnlockURL} {
+				if u = strings.TrimSpace(u); u == "" {
+					continue
+				}
+				if pu, err := url.Parse(u); err != nil || (pu.Scheme != "http" && pu.Scheme != "https") {
+					return errors.New("节点来源「" + s.Name + "」的地址必须以 http:// 或 https:// 开头")
+				}
 			}
-			if pu, err := url.Parse(u); err != nil || (pu.Scheme != "http" && pu.Scheme != "https") {
-				return errors.New("节点来源「" + s.Name + "」的地址必须以 http:// 或 https:// 开头")
-			}
 		}
-		if s.UAMode != "passthrough" {
-			s.UAMode = "fixed"
-		}
+		kinds[s.ID] = s.Kind
 	}
+	var tmp any
 	for pi := range c.Profiles {
 		p := &c.Profiles[pi]
+		fixID(&p.ID)
+		p.Token = firstNonEmpty(tokens[p.ID], randHex(16)) // 令牌只能通过重置接口修改
+		if strings.TrimSpace(p.Name) == "" {
+			p.Name = "订阅组 " + strconv.Itoa(pi+1)
+		}
+		if err := yaml.Unmarshal([]byte(p.Parser), &tmp); err != nil {
+			return errors.New("订阅组「" + p.Name + "」的 Parser 不是合法的 YAML: " + err.Error())
+		}
 		refs := []SourceRef{}
 		for _, r := range p.Sources {
 			if id, ok := sourceIDs[r.Source]; ok { // 引用的来源不存在（已被删除）就去掉这条引用
@@ -358,61 +332,15 @@ func validateConfig(c *Config, tokens map[string]string) error {
 			}
 		}
 		p.Sources = refs
-	}
-	if c.Templates == nil {
-		c.Templates = []Template{}
-	}
-	templateKinds := map[string]string{} // 模板 ID → 类型
-	defer func() {
-		// 「最近套用的模板」只保留仍然存在且类型对得上的
-		for pi := range c.Profiles {
-			p := &c.Profiles[pi]
-			for kind, ref := range p.Applied {
-				if templateKinds[ref.ID] != kind || len(ref.Hash) > 64 {
-					delete(p.Applied, kind)
-				}
-			}
-			if len(p.Applied) == 0 {
-				p.Applied = nil
+		// 底板必须是本组引用的远程来源；不是的话改用第一个远程来源，没有就留空（生成时报错提示）
+		base := sourceIDs[p.Base]
+		if !slices.ContainsFunc(refs, func(r SourceRef) bool { return r.Source == base }) || kinds[base] != "remote" {
+			base = ""
+			if i := slices.IndexFunc(refs, func(r SourceRef) bool { return kinds[r.Source] == "remote" }); i >= 0 {
+				base = refs[i].Source
 			}
 		}
-	}()
-	for i := range c.Templates {
-		t := &c.Templates[i]
-		old := t.ID
-		fixID(&t.ID)
-		if t.ID == old {
-			templateKinds[t.ID] = t.Kind
-		}
-		switch t.Kind {
-		case "groups":
-			t.Rules, t.Parser = Rules{}, ""
-		case "rules":
-			t.Groups, t.Parser = nil, ""
-		case "parser":
-			t.Groups, t.Rules = nil, Rules{}
-			if err := yaml.Unmarshal([]byte(t.Parser), &tmp); err != nil {
-				return errors.New("模板「" + t.Name + "」的 Parser 不是合法的 YAML: " + err.Error())
-			}
-		default:
-			return errors.New("模板「" + t.Name + "」的类型无效")
-		}
-		if strings.TrimSpace(t.Name) == "" {
-			t.Name = "未命名模板"
-		}
-	}
-	if c.RuleSources == nil {
-		c.RuleSources = []RuleSource{}
-	}
-	for i := range c.RuleSources {
-		s := &c.RuleSources[i]
-		fixID(&s.ID)
-		if err := s.normalize(); err != nil {
-			return errors.New("规则仓库「" + s.Name + "」: " + err.Error())
-		}
-		if s.Name == "" {
-			s.Name = firstNonEmpty(s.Repo, "规则仓库 "+strconv.Itoa(i+1))
-		}
+		p.Base = base
 	}
 	if c.CacheMinutes < 0 {
 		c.CacheMinutes = 0
@@ -442,11 +370,6 @@ func (a *App) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("force") == "1" {
 		expect = -1
 	}
-	a.saveConfig(w, c, expect)
-}
-
-// saveConfig 保存已校验过的配置并返回给前端，同时清掉已删除订阅组的访问记录。expect 见 Store.SetConfig。
-func (a *App) saveConfig(w http.ResponseWriter, c Config, expect int) {
 	if err := a.store.SetConfig(&c, expect); err != nil {
 		if errors.Is(err, errConflict) {
 			writeErr(w, http.StatusConflict, err.Error())
@@ -493,7 +416,7 @@ func findProfile(c Config, match func(Profile) bool) *Profile {
 	return nil
 }
 
-// clientUA 取请求的 UA 作为透传的依据，限制长度以免被用来撑大缓存键。
+// clientUA 取请求的 UA 记进访问记录，限制长度。
 func clientUA(ua string) string {
 	if ua = strings.TrimSpace(ua); len(ua) > 256 {
 		ua = ua[:256]
@@ -508,7 +431,6 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Config  Config `json:"config"`
 		Profile int    `json:"profile"` // 订阅组在 Config.Profiles 里的下标：新建的订阅组可能还没有可靠的 ID
-		UA      string `json:"ua"`
 		Refresh bool   `json:"refresh"`
 	}
 	if !readJSON(w, r, &req) {
@@ -524,14 +446,14 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := &cfg.Profiles[req.Profile]
-	res, err := Build(cfg, *p, a.fetcher, clientUA(req.UA), req.Refresh)
+	res, err := Build(cfg, *p, a.fetcher, req.Refresh)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"yaml": string(res.YAML), "subs": res.Subs, "warnings": res.Warnings,
-		"total": res.Total, "userinfo": res.Userinfo,
+		"total": res.Total, "groups": res.Groups, "rules": res.Rules, "userinfo": res.Userinfo,
 	})
 }
 
@@ -551,7 +473,7 @@ func (a *App) handleSub(w http.ResponseWriter, r *http.Request) {
 	ua := clientUA(r.UserAgent())
 	rec := AccessRecord{Time: time.Now(), IP: clientIP(r), UA: ua, Status: http.StatusOK}
 	defer func() { a.access.Add(p.ID, rec) }()
-	res, err := Build(cfg, *p, a.fetcher, ua, r.URL.Query().Get("refresh") == "1")
+	res, err := Build(cfg, *p, a.fetcher, r.URL.Query().Get("refresh") == "1")
 	if err != nil {
 		log.Printf("生成订阅失败: %v", err)
 		rec.Status = http.StatusInternalServerError

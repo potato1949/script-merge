@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,8 @@ type BuildResult struct {
 	Subs     []SubStatus `json:"subs"`
 	Warnings []string    `json:"warnings"`
 	Total    int         `json:"total"` // 最终节点总数
+	Groups   int         `json:"groups"`
+	Rules    int         `json:"rules"`
 	Userinfo string      `json:"userinfo"`
 }
 
@@ -38,20 +41,6 @@ func deepCopy(v any) any {
 		return l
 	}
 	return v
-}
-
-// splitLines 按行拆分规则文本，忽略空行、# 注释和行首的 "- "。
-func splitLines(text string) []any {
-	var out []any
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		line = strings.TrimSpace(strings.TrimPrefix(line, "- "))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		out = append(out, line)
-	}
-	return out
 }
 
 // parseCustomProxies 解析手动节点：接受 YAML 数组、带 proxies: 的 YAML，或每行一条分享链接。
@@ -82,28 +71,16 @@ func parseCustomProxies(text string) ([]map[string]any, error) {
 	return nil, errors.New("自定义节点格式无法识别（需要 YAML 数组或分享链接）")
 }
 
-// resolveUA 决定某个订阅本次拉取上游用哪个 UA：透传模式下用拉取合并链接的客户端的 UA，
-// 否则（或客户端没带 UA 时）用全局设置里的固定 UA。
-func resolveUA(cfg Config, s Source, clientUA string) string {
-	if s.UAMode == "passthrough" && clientUA != "" {
-		return clientUA
-	}
-	return firstNonEmpty(strings.TrimSpace(cfg.UserAgent), defaultUA)
-}
-
-// Build 为订阅组 p 拉取订阅并生成最终配置。clientUA 是拉取合并链接的客户端的 UA。流程：
-// 基础配置 → 拉取订阅 / 解析手动节点 → 汇总节点 → 策略组 → 规则 → Parser → 校验 → 输出 YAML
-func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*BuildResult, error) {
+// Build 为订阅组 p 生成最终配置。流程：
+// 并发拉取本组引用的来源 → 以底板机场的完整配置为基础 → 汇总节点（底板的在前；过滤、加前缀、重名加序号）
+// → 底板的策略组换上新的节点名，包含底板全部节点的组再加上其他来源的节点 → 带上其他来源节点地址要用的 hosts
+// → Parser → 校验 → 输出 YAML。底板的规则、rule-providers、DNS 等其余内容原样保留。
+func Build(cfg Config, p Profile, f *Fetcher, force bool) (*BuildResult, error) {
 	res := &BuildResult{Warnings: []string{}}
 	warn := func(format string, a ...any) { res.Warnings = append(res.Warnings, fmt.Sprintf(format, a...)) }
 
-	root := map[string]any{}
-	if err := yaml.Unmarshal([]byte(cfg.BaseConfig), &root); err != nil {
-		return nil, fmt.Errorf("基础配置 YAML 解析失败: %w", err)
-	}
-
-	// 1. 并发拉取订阅
-	// 来源是全局对象，订阅组里只有引用；同一个来源被多个订阅组（或同组多次）引用时共用缓存
+	// 1. 本组用到的来源，底板排第一个。来源是全局对象，订阅组里只有引用；
+	// 同一个来源被多个订阅组（或同组多次）引用时共用缓存
 	type usedSource struct {
 		Source
 		SourceRef
@@ -115,45 +92,52 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 	}
 	var subs []usedSource
 	for i, ref := range p.Sources {
-		if !ref.Enabled {
-			continue
-		}
 		src, ok := byID[ref.Source]
 		if !ok { // validateConfig 会去掉悬空引用，正常不会走到
 			warn("第 %d 个节点来源不存在，已忽略", i+1)
 			continue
 		}
-		subs = append(subs, usedSource{src, ref, i})
+		switch {
+		case ref.Source == p.Base && (len(subs) == 0 || subs[0].ID != p.Base): // 底板始终使用，不看启用开关
+			subs = append([]usedSource{{src, ref, i}}, subs...)
+		case ref.Enabled:
+			subs = append(subs, usedSource{src, ref, i})
+		}
 	}
+	if base, ok := byID[p.Base]; !ok || base.Kind == "manual" || len(subs) == 0 || subs[0].ID != p.Base {
+		return nil, errors.New("还没有选择底板机场：在本组的节点来源里把一个远程订阅设为底板")
+	}
+
+	// 2. 并发拉取
 	entries := make([]*cacheEntry, len(subs))
 	res.Subs = make([]SubStatus, len(subs))
 	ttl := time.Duration(cfg.CacheMinutes) * time.Minute
+	ua := firstNonEmpty(strings.TrimSpace(cfg.UserAgent), defaultUA)
 	unlockUA := firstNonEmpty(strings.TrimSpace(cfg.UnlockUserAgent), chromeUA)
 	var wg sync.WaitGroup
 	for i, s := range subs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			st := SubStatus{Index: s.index, ID: s.ID, Name: s.Name, Base: i == 0}
 			if s.Kind == "manual" {
-				st := SubStatus{Index: s.index, ID: s.ID, Name: s.Name}
 				nodes, err := parseCustomProxies(s.Nodes)
 				if err != nil {
 					st.Error = err.Error()
 				} else {
-					entries[i] = &cacheEntry{Proxies: nodes}
+					entries[i] = &cacheEntry{upstream: upstream{Proxies: nodes}}
 					st.Count = len(nodes)
 				}
 				res.Subs[i] = st
 				return
 			}
-			url, ua := strings.TrimSpace(s.URL), resolveUA(cfg, s.Source, clientUA)
-			st := SubStatus{Index: s.index, ID: s.ID, Name: s.Name, URL: url, UA: ua}
-			if url == "" {
+			st.URL, st.UA = strings.TrimSpace(s.URL), ua
+			if st.URL == "" {
 				st.Error = "没有填写订阅链接"
 				res.Subs[i] = st
 				return
 			}
-			e, err := f.Get(s.Source, url, ua, unlockUA, ttl, force)
+			e, err := f.Get(s.Source, st.URL, ua, unlockUA, ttl, force)
 			if err != nil {
 				st.Error = err.Error()
 				st.Stale = e != nil
@@ -167,10 +151,19 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 	}
 	wg.Wait()
 
-	// 2. 汇总节点（重名节点自动加序号）
+	base := entries[0]
+	switch {
+	case base == nil:
+		return nil, fmt.Errorf("底板机场「%s」拉取失败，也没有可用的缓存：%s", subs[0].Name, res.Subs[0].Error)
+	case len(base.groups()) == 0:
+		return nil, fmt.Errorf("底板机场「%s」返回的不是带策略组的 Clash 配置，不能作为底板。可以在全局设置里换一个 UA（如 clash.meta）再试，或者换一个机场做底板", subs[0].Name)
+	}
+	root := deepCopy(base.Doc).(map[string]any)
+
+	// 3. 汇总节点（重名节点自动加序号）
 	proxies := []any{}
 	seen := map[string]bool{}
-	add := func(p map[string]any, prefix, dialer string) {
+	add := func(p map[string]any, prefix, dialer string) string {
 		p = deepCopy(p).(map[string]any)
 		if dialer != "" { // 前置代理：覆盖节点自带的 dialer-proxy
 			p["dialer-proxy"] = dialer
@@ -183,110 +176,66 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 		seen[name] = true
 		p["name"] = name
 		proxies = append(proxies, p)
+		return name
 	}
 	var infos []string
+	infoFrom := map[string]bool{}   // 同一个来源被引用多次时，流量信息只算一次
+	rename := map[string][]string{} // 底板：上游节点名 → 输出里的名字（被过滤掉的没有）
+	var others []string             // 其他来源的节点在输出里的名字
 	for i, s := range subs {
 		e := entries[i]
 		if e == nil {
 			continue
 		}
-		if e.Userinfo != "" {
+		if e.Userinfo != "" && !infoFrom[s.ID] {
+			infoFrom[s.ID] = true
 			infos = append(infos, e.Userinfo)
 		}
 		inc, err := optRegex(s.Include)
 		if err != nil {
-			warn("订阅「%s」包含%v", s.Name, err)
+			warn("「%s」的只保留%v", s.Name, err)
 		}
 		exc, err := optRegex(s.Exclude)
 		if err != nil {
-			warn("订阅「%s」排除%v", s.Name, err)
+			warn("「%s」的排除%v", s.Name, err)
 		}
+		var servers []string
 		for _, p := range e.Proxies {
 			name := fmt.Sprint(p["name"])
 			if (inc != nil && !reMatch(inc, name)) || (exc != nil && reMatch(exc, name)) {
 				continue
 			}
-			add(p, s.Prefix, strings.TrimSpace(s.Dialer))
+			out := add(p, s.Prefix, strings.TrimSpace(s.Dialer))
+			if i == 0 {
+				rename[name] = append(rename[name], out)
+			} else {
+				others = append(others, out)
+			}
+			if server, ok := p["server"].(string); ok {
+				servers = append(servers, server)
+			}
 			res.Subs[i].Used++
+		}
+		if i > 0 { // 底板自己的 hosts 已经整份在输出里了
+			hosts, filter := nodeHosts(&e.upstream, servers)
+			res.Subs[i].Hosts = len(hosts)
+			res.Warnings = append(res.Warnings, mergeNodeHosts(root, hosts, filter)...)
 		}
 	}
 	res.Userinfo = mergeUserinfo(infos)
-	nodeNames := namesOf(proxies)
 
-	// 3. 策略组
-	groups := []any{}
-	for _, g := range p.Groups {
-		if strings.TrimSpace(g.Name) == "" {
-			continue
-		}
-		members := []any{}
-		for _, e := range g.Extra {
-			if e = strings.TrimSpace(e); e != "" {
-				members = append(members, e)
-			}
-		}
-		switch g.Nodes {
-		case "all":
-			for _, n := range nodeNames {
-				members = append(members, n)
-			}
-		case "filter":
-			re, err := optRegex(g.Filter)
-			if err != nil {
-				warn("策略组「%s」筛选%v", g.Name, err)
-			}
-			for _, n := range nodeNames {
-				if re != nil && reMatch(re, n) {
-					members = append(members, n)
-				}
-			}
-		}
-		if len(members) == 0 {
-			warn("策略组「%s」没有任何成员，已填入 DIRECT", g.Name)
-			members = append(members, "DIRECT")
-		}
-		typ := firstNonEmpty(g.Type, "select")
-		gm := map[string]any{"name": g.Name, "type": typ, "proxies": members}
-		if typ != "select" {
-			gm["url"] = firstNonEmpty(g.TestURL, "https://www.gstatic.com/generate_204")
-			gm["interval"] = 300
-			if g.Interval > 0 {
-				gm["interval"] = g.Interval
-			}
-		}
-		groups = append(groups, gm)
-	}
-
-	// 4. 规则：前置规则 → 规则集 → 后置规则
-	providers := map[string]any{}
-	rules := splitLines(p.RulesBefore)
-	for _, rs := range p.RuleSets {
-		if !rs.Enabled || rs.Name == "" || rs.URL == "" {
-			continue
-		}
-		format := firstNonEmpty(rs.Format, "yaml")
-		ext := map[string]string{"yaml": "yaml", "text": "list", "mrs": "mrs"}[format]
-		providers[rs.Name] = map[string]any{
-			"type": "http", "behavior": firstNonEmpty(rs.Behavior, "classical"), "format": format,
-			"url": rs.URL, "path": "./ruleset/" + rs.Name + "." + ext, "interval": 86400,
-		}
-		rule := "RULE-SET," + rs.Name + "," + firstNonEmpty(rs.Policy, "DIRECT")
-		if rs.NoResolve {
-			rule += ",no-resolve"
-		}
-		rules = append(rules, rule)
-	}
-	rules = append(rules, splitLines(p.RulesAfter)...)
-	if rules == nil {
-		rules = []any{}
-	}
-
+	// 4. 策略组：底板的，换上新的节点名
+	groups, ws := baseGroups(&base.upstream, rename, others)
+	res.Warnings = append(res.Warnings, ws...)
 	root["proxies"] = proxies
 	root["proxy-groups"] = groups
-	if len(providers) > 0 {
-		root["rule-providers"] = providers
+	if len(others) > 0 && !slices.ContainsFunc(groups, func(g any) bool {
+		gm := g.(map[string]any)
+		ps, _ := gm["proxies"].([]any)
+		return slices.Contains(ps, any(others[0])) || gm["include-all"] == true || gm["include-all-proxies"] == true
+	}) {
+		warn("底板里没有包含它全部节点的策略组，其他来源的节点没有加进任何策略组。可以用 Parser 把它们加到需要的策略组里")
 	}
-	root["rules"] = rules
 
 	// 5. CFW Parser
 	pw, err := ApplyParser(root, p.Parser)
@@ -296,6 +245,9 @@ func Build(cfg Config, p Profile, f *Fetcher, clientUA string, force bool) (*Bui
 	res.Warnings = append(res.Warnings, pw...)
 	res.Warnings = append(res.Warnings, validate(root)...)
 	res.Total = len(namesOf(root["proxies"]))
+	res.Groups = len(namesOf(root["proxy-groups"]))
+	rules, _ := root["rules"].([]any)
+	res.Rules = len(rules)
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
@@ -351,8 +303,8 @@ func validate(root map[string]any) (warns []string) {
 		switch {
 		case parts[0] == "MATCH" && len(parts) >= 2:
 			policy = parts[1]
-		case strings.ContainsAny(parts[0], "()") || parts[0] == "AND" || parts[0] == "OR" || parts[0] == "NOT":
-			continue // 逻辑规则不做校验
+		case strings.ContainsAny(parts[0], "()") || parts[0] == "AND" || parts[0] == "OR" || parts[0] == "NOT" || parts[0] == "SUB-RULE":
+			continue // 逻辑规则、子规则不做校验
 		case len(parts) >= 3:
 			policy = parts[2]
 		default:

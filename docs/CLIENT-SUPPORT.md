@@ -32,11 +32,11 @@
 
 原先的 `Subscription.Variants`（按来拉合并链接的客户端 UA 切换上游链接）是为「按客户端拉原生格式」准备的，结论 2 之后没有用途，已在配置结构 v4 中移除。每个订阅只有一个链接，填 Clash 订阅链接即可。
 
-UA 透传（`UAMode = passthrough`）保留：它只影响向上游报什么 UA，不改变「上游内容必须是 Clash YAML 或分享链接」这个约定。
+UA 透传后来也移除了（v8 重构）：拉上游一律用全局设置里的 UA，底板机场必须返回带策略组和规则的完整 Clash 配置，透传非 Clash 客户端的 UA 只会拿到别的格式。
 
 ### 4. Stash 直接用 Clash 输出
 
-Stash 的配置就是 Clash 格式的 YAML，现有输出可以直接用，不需要单独的渲染器、基础配置或规则集链接。差异只在少数规则类型上，见下一节。
+Stash 的配置就是 Clash 格式的 YAML，现有输出可以直接用，不需要单独的渲染器。差异只在少数规则类型上，见下一节。
 
 ## Stash 与 mihomo 的规则差异（2026-11-11 核实）
 
@@ -82,8 +82,8 @@ Stash 的配置就是 Clash 格式的 YAML，现有输出可以直接用，不�
 
 ### 对本项目的影响
 
-- `build.go` 生成的是 `RULE-SET` 规则加 `type: http` 的规则集（`behavior`、`format`、`url`、`path`、`interval`）；内置模板用 classical / domain / ipcidr 的 yaml 规则集，加 `GEOIP,CN` 和 `MATCH`。这些都在两边的交集里，**不需要为 Stash 改任何输出**。
-- 风险只在用户手写的前置 / 后置规则和 Parser 加进来的内容：其中若有 mihomo 独有的类型（最可能是 `SUB-RULE`、`SRC-IP-CIDR`），在 Stash 上可能有问题。
+- 规则和 `rule-providers` 都原样来自底板机场的配置。机场给 Clash 客户端的配置一般也兼顾 Stash，但若其中有 mihomo 独有的类型（最可能是 `SUB-RULE`、`SRC-IP-CIDR`），在 Stash 上可能有问题；rule-provider 的 `header` 字段名也和 Stash 不同。
+- Parser 加进来的内容同理。
 - 可选的后续改进：客户端 UA 是 Stash 时，对上表「mihomo 有，Stash 文档没提」的规则行给出警告。是否直接删掉这些行，等下面的实机测试结果再定。
 
 ### 资料来源
@@ -97,7 +97,7 @@ Stash 的配置就是 Clash 格式的 YAML，现有输出可以直接用，不�
 
 ### 接入位置
 
-`Build` 的前 6 步（基础配置 → 节点 → 策略组 → 规则 → Parser → validate）产出 Clash 配置树 `root`，第 7 步把它编码成 YAML。渲染器接在第 6 步之后，替换第 7 步：
+`Build` 先产出 Clash 配置树 `root`（底板配置 → 节点 → 策略组 → Parser → validate），最后把它编码成 YAML。渲染器接在 validate 之后，替换编码这一步：
 
 - Clash / Stash：现在的 `toNode` + YAML 编码。
 - Loon：从 `root` 里取 `proxies`、`proxy-groups`、`rules`、`rule-providers`，转成 Loon 的 `[Proxy]`、`[Proxy Group]`、`[Rule]`、`[Remote Rule]` 等段；`root` 里其余的 Clash 配置项（`dns`、`tun` 等）不转换。
@@ -108,10 +108,9 @@ Stash 的配置就是 Clash 格式的 YAML，现有输出可以直接用，不�
 
 1. **渲染器**：节点、策略组、规则行、规则集的转换。目标客户端不支持的协议、字段、规则类型跳过，并在预览里给出警告（「n 个节点因 Loon 不支持 xxx 被跳过」）。
 2. **输出目标的判定**：链接参数（如 `/sub/{token}?target=loon`）优先，其次按客户端 UA 自动识别，默认 Clash。预览页相应增加「目标客户端」选项。
-3. **透传 UA 的限制**：透传只对 Clash 系客户端生效；非 Clash 系客户端来拉时退回固定 UA，否则机场会按 UA 返回该客户端的原生格式，解析不了。
-4. **该客户端自己的基础配置**：例如 Loon 的 `[General]` 段。全局设置里按目标分别保存，Clash 的基础配置不参与转换。
-5. **规则集链接**：其他客户端的规则集文件格式和 Clash 不同。`RuleSet` 加按目标的可选覆盖链接（只是加字段，不需要迁移）；没填时跳过该规则集并警告。内置模板补上对应链接。
-6. **响应头**：`Content-Type`、文件扩展名，以及订阅流量信息的传递方式按目标调整。
+3. **该客户端自己的通用设置**：例如 Loon 的 `[General]` 段。底板里的 `dns`、`tun` 等 Clash 设置不转换，要另外提供。
+4. **规则集**：底板的 `rule-providers` 指向的是 Clash 格式的规则文件，其他客户端未必能用，需要想办法转换或替换，否则跳过并警告。
+5. **响应头**：`Content-Type`、文件扩展名，以及订阅流量信息的传递方式按目标调整。
 
 缓存不受影响：拉取不依赖输出目标，缓存键不用改。
 

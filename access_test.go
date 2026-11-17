@@ -12,11 +12,20 @@ import (
 )
 
 func TestAccessLog(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`proxies:
+  - {name: x, type: http, server: 1.1.1.1, port: 80}
+proxy-groups:
+  - {name: G, type: select, proxies: [x]}
+`))
+	}))
+	defer up.Close()
 	a, do := newTestApp(t)
 	cfg := a.store.Config()
-	cfg.Sources = []Source{{ID: "aaaaaaaaaaaaaaaa", Name: "自建", Kind: "manual", Nodes: "- {name: x, type: http, server: 1.1.1.1, port: 80}"}}
+	cfg.Sources = []Source{{ID: "aaaaaaaaaaaaaaaa", Name: "机场", URL: up.URL}}
 	cfg.Profiles[0].Sources = []SourceRef{{Source: "aaaaaaaaaaaaaaaa", Enabled: true}}
-	cfg.Profiles = append(cfg.Profiles, Profile{Name: "空的"})
+	cfg.Profiles[0].Base = "aaaaaaaaaaaaaaaa"
+	cfg.Profiles = append(cfg.Profiles, Profile{Name: "没有底板"})
 	body, _ := json.Marshal(cfg)
 	cfg = decode[Config](t, do("PUT", "/api/config", string(body)))
 	p, empty := cfg.Profiles[0], cfg.Profiles[1]
@@ -39,8 +48,8 @@ func TestAccessLog(t *testing.T) {
 	}
 	do("GET", "/sub/"+p.Token, "", from("127.0.0.1:4000", "Stash/3", "6.6.6.6, 203.0.113.9, 10.0.0.2")) // 经本机反代
 	do("GET", "/sub/"+p.Token, "", from("198.51.100.7:4001", "mihomo/1.19", ""))
-	if w := do("GET", "/sub/"+empty.Token, "", from("198.51.100.7:4002", "x", "")); w.Code != http.StatusBadGateway {
-		t.Errorf("没有节点的订阅组: HTTP %d", w.Code)
+	if w := do("GET", "/sub/"+empty.Token, "", from("198.51.100.7:4002", "x", "")); w.Code != http.StatusInternalServerError {
+		t.Errorf("没有底板的订阅组: HTTP %d", w.Code)
 	}
 	do("GET", "/sub/no-such-token", "") // 令牌不对的请求不属于任何订阅组，不记录
 	do("POST", "/api/preview", `{"config":`+string(body)+`,"profile":0}`)
@@ -60,7 +69,7 @@ func TestAccessLog(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("记录 = %+v", got)
 	}
-	if got := records(empty.ID); len(got) != 1 || got[0].Status != http.StatusBadGateway || got[0].Nodes != 0 {
+	if got := records(empty.ID); len(got) != 1 || got[0].Status != http.StatusInternalServerError || got[0].Nodes != 0 {
 		t.Errorf("失败的拉取也应记录: %+v", got)
 	}
 
