@@ -13,6 +13,10 @@ import (
 
 func TestAccessLog(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/no-groups" { // 底板没有策略组，生成失败
+			w.Write([]byte("proxies:\n  - {name: x, type: http, server: 1.1.1.1, port: 80}\n"))
+			return
+		}
 		w.Write([]byte(`proxies:
   - {name: x, type: http, server: 1.1.1.1, port: 80}
 proxy-groups:
@@ -22,10 +26,10 @@ proxy-groups:
 	defer up.Close()
 	a, do := newTestApp(t)
 	cfg := a.store.Config()
-	cfg.Sources = []Source{{ID: "aaaaaaaaaaaaaaaa", Name: "机场", URL: up.URL}}
+	cfg.Sources = []Source{{ID: "aaaaaaaaaaaaaaaa", Name: "机场", URL: up.URL}, {ID: "bbbbbbbbbbbbbbbb", Name: "坏机场", URL: up.URL + "/no-groups"}}
 	cfg.Profiles = []Profile{
 		{Name: "机场", Base: "aaaaaaaaaaaaaaaa", Sources: []SourceRef{{Source: "aaaaaaaaaaaaaaaa", Enabled: true}}},
-		{Name: "没有底板"},
+		{Name: "生成失败", Base: "bbbbbbbbbbbbbbbb", Sources: []SourceRef{{Source: "bbbbbbbbbbbbbbbb", Enabled: true}}},
 	}
 	body, _ := json.Marshal(cfg)
 	cfg = decode[Config](t, do("PUT", "/api/config", string(body)))

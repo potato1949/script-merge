@@ -304,7 +304,8 @@ const usersOf = id => cfg.profiles.filter(p => p.sources.some(r => r.source === 
 const quote = list => list.map(p => `「${p.name || '(未命名)'}」`).join('');
 // 订阅组里作为底板的那条引用的下标（同一个来源引用多次时是第一条），没有为 -1
 const baseIndex = p => p.sources.findIndex(r => r.source === p.base);
-// 底板没选或已不在本组里时，改用本组第一个远程来源（和服务端 validateConfig 的规则一致）
+// 底板没选时（只有旧数据会这样），改用本组第一个远程来源（和服务端 validateConfig 的规则一致）。
+// 底板选定后不能更换：界面上不提供换底板的入口，底板的引用和来源也不能删，服务端保存时同样会拒绝
 function fixBase(p) {
   const ok = id => p.sources.some(r => r.source === id) && srcOf(id)?.kind === 'remote';
   if (!ok(p.base)) p.base = p.sources.map(r => r.source).find(ok) || '';
@@ -404,12 +405,13 @@ function field(label, obj, key, o = {}) {
   if (!label) return input;
   return h('label', { class: 'f' + (o.wide ? ' wide' : '') }, label, input);
 }
-function listButtons(list, i, remove) {
+// locked：删除按钮禁用，值是悬停时的原因
+function listButtons(list, i, remove, locked) {
   const move = d => { const j = i + d; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; markDirty(); render(); };
   return [
     h('button', { class: 'sm ico', title: '上移', 'aria-label': '上移', onclick: () => move(-1), disabled: i === 0 }, '↑'),
     h('button', { class: 'sm ico', title: '下移', 'aria-label': '下移', onclick: () => move(1), disabled: i === list.length - 1 }, '↓'),
-    h('button', { class: 'sm danger', onclick: remove || (() => { list.splice(i, 1); markDirty(); render(); }) }, '删除'),
+    h('button', { class: 'sm danger', disabled: !!locked, title: locked || null, onclick: remove || (() => { list.splice(i, 1); markDirty(); render(); }) }, '删除'),
   ];
 }
 const datalist = (id, values) => h('datalist', { id }, values.map(v => h('option', { value: v })));
@@ -610,7 +612,7 @@ function rail() {
     h('div', { class: 'glist' },
       cfg.profiles.map((p, i) => h('button', { class: 'gitem' + (on('group', i) ? ' on' : ''), 'aria-current': on('group', i) ? 'page' : null, onclick: () => go('group', i) },
         h('b', {}, p.name || '(未命名)'), h('small', {}, p.base ? `底板：${srcOf(p.base)?.name || '?'}` : '未选底板'), dot(e => e.pid === p.id))),
-      h('button', { class: 'gnew', onclick: newGroupDialog }, '+ 新建订阅组')),
+      h('button', { class: 'gnew', onclick: newGroupDialog, disabled: !cfg.sources.some(s => s.kind === 'remote'), title: cfg.sources.some(s => s.kind === 'remote') ? null : '还没有机场订阅，新建订阅组时要选一个做底板' }, '+ 新建订阅组')),
     h('div', { class: 'railnav' },
       h('button', { class: on('sources') ? 'on' : '', onclick: () => go('sources') }, '节点来源', dot(e => e.page === 'sources')),
       h('button', { class: on('settings') ? 'on' : '', onclick: () => go('settings') }, '全局设置', dot(e => e.page === 'settings')),
@@ -721,7 +723,7 @@ function stateTag(s) {
   return st.error ? h('span', { class: 'tag err', title: st.error }, `拉取失败 · ${ago(st.time)}`)
     : h('span', { class: 'tag ok', title: '最近一次请求上游的结果' }, `${st.count} 个节点 · ${ago(st.time)}`);
 }
-// 订阅组里只引用全局的节点来源：这里可以选用已有来源、移除、选底板和设置本组的前缀 / 过滤；
+// 订阅组里只引用全局的节点来源：这里可以选用已有来源、移除（底板除外）和设置本组的前缀 / 过滤；
 // 来源本身只在「节点来源」页新建和修改，免得在一个组里顺手一改、别的组跟着变
 function tabSubs(p) {
   const status = (previews[p.id]?.subs || []).filter(x => !x.noCache), dialerList = nextId('dialers'), bi = baseIndex(p);
@@ -741,8 +743,9 @@ function tabSubs(p) {
           status: !st ? stateTag(s) : (st.error ? h('span', { class: 'tag err', title: st.error }, (st.stale ? `失败，用缓存 ${st.used} 个：` : '失败：') + st.error)
             : h('span', { class: 'tag ok' }, `${st.used} / ${st.count} 个节点`)),
           controls: [
-            !isBase && s.kind !== 'manual' && h('button', { class: 'sm', title: '以这个机场的完整配置为底板', onclick: () => { p.base = s.id; markDirty(); render(); } }, '设为底板'),
-            listButtons(p.sources, i, () => { p.sources.splice(i, 1); fixBase(p); markDirty(); render(); }),
+            // 同一来源引用了多次时，删掉底板那条后底板顺延到下一条，来源不变，所以只锁最后一条
+            listButtons(p.sources, i, () => { p.sources.splice(i, 1); fixBase(p); markDirty(); render(); },
+              r.source === p.base && p.sources.filter(x => x.source === p.base).length === 1 && '底板创建后不能更换'),
           ],
           body: () => [
             sourceSummary(s),
@@ -799,17 +802,18 @@ function pickSourceDialog(p, use) {
 }
 function newGroupDialog() {
   const remotes = cfg.sources.filter(s => s.kind === 'remote');
-  const draft = { name: '订阅组 ' + (cfg.profiles.length + 1), base: remotes[0]?.id || '' };
+  if (remotes.length === 0) return;
+  // 底板必须在这里选定，创建后不能更换
+  const draft = { name: '订阅组 ' + (cfg.profiles.length + 1), base: remotes[0].id };
   const pickEl = h('div', { class: 'pick' });
-  const draw = () => pickEl.replaceChildren(...[...remotes, null].map(s => h('button', { class: (s?.id || '') === draft.base ? 'on' : '', onclick: () => { draft.base = s?.id || ''; draw(); } },
-    h('b', {}, s ? s.name || '(未命名)' : '稍后再选'), s && stateTag(s))));
+  const draw = () => pickEl.replaceChildren(...remotes.map(s => h('button', { class: s.id === draft.base ? 'on' : '', onclick: () => { draft.base = s.id; draw(); } },
+    h('b', {}, s.name || '(未命名)'), stateTag(s))));
   draw();
   dialog('新建订阅组', () => [
     field('名称', draft, 'name', { local: true }),
-    remotes.length > 0 && [h('div', { class: 'sublabel' }, '底板机场'), pickEl],
+    h('div', { class: 'sublabel' }, '底板机场'), pickEl,
   ], [{ label: '新建订阅组', primary: true, onclick: close => {
-    const p = { id: newID(), name: draft.name.trim() || '未命名', token: '', fileName: '', base: draft.base, sources: [], groups: [], parser: '' };
-    if (draft.base) p.sources.push(blankRef(srcOf(draft.base)));
+    const p = { id: newID(), name: draft.name.trim() || '未命名', token: '', fileName: '', base: draft.base, sources: [blankRef(srcOf(draft.base))], groups: [], parser: '' };
     cfg.profiles.push(p); markDirty(); close(); tab = 'subs'; go('group', cfg.profiles.length - 1);
   } }]);
 }
@@ -1123,7 +1127,7 @@ function sourcesPage() {
           return item(s, {
             name: s.name, chips: [...sourceChips(s), bases.length > 0 && [`${bases.length} 个订阅组的底板`, 'base'], users.length > 0 ? `${users.length} 个订阅组在用` : '未被使用', ...trafficOf(s)],
             status: stateTag(s),
-            controls: h('button', { class: 'sm danger', onclick: () => {
+            controls: h('button', { class: 'sm danger', disabled: bases.length > 0, title: bases.length > 0 ? `是 ${quote(bases)} 的底板，不能删除` : null, onclick: () => {
               if (!confirm(users.length > 0 ? `删除来源「${s.name}」？它会同时从 ${quote(users)} 里移除。` : `删除来源「${s.name}」？`)) return;
               cfg.sources.splice(cfg.sources.indexOf(s), 1);
               for (const p of cfg.profiles) { p.sources = p.sources.filter(r => r.source !== s.id); fixBase(p); }

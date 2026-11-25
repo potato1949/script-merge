@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -131,6 +132,60 @@ func TestValidateSourcesAndRefs(t *testing.T) {
 	}
 }
 
+// 底板在新建订阅组时必须选好，之后不能更换，也不能删掉它的引用或来源；旧数据里底板为空的可以补选。
+func TestBaseLocked(t *testing.T) {
+	a, do := newTestApp(t)
+	put := func(c Config) *httptest.ResponseRecorder {
+		c.Revision = a.store.Config().Revision
+		b, _ := json.Marshal(c)
+		return do("PUT", "/api/config", string(b))
+	}
+	ref := func(id string) SourceRef { return SourceRef{Source: id, Enabled: true} }
+	const A, B = "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"
+	cfg := a.store.Config()
+	cfg.Sources = []Source{{ID: A, Name: "A", URL: "https://a.example/s"}, {ID: B, Name: "B", URL: "https://b.example/s"}}
+	cfg.Profiles = []Profile{{ID: "cccccccccccccccc", Name: "甲"}}
+	if w := put(cfg); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "必须") {
+		t.Fatalf("新建订阅组不选底板应被拒绝: HTTP %d %s", w.Code, w.Body)
+	}
+	cfg.Profiles[0].Base, cfg.Profiles[0].Sources = A, []SourceRef{ref(A), ref(B)}
+	cfg = decode[Config](t, put(cfg))
+
+	for name, edit := range map[string]func(c *Config){
+		"换底板":     func(c *Config) { c.Profiles[0].Base = B },
+		"删掉底板的引用": func(c *Config) { c.Profiles[0].Sources = []SourceRef{ref(B)} },
+		"删掉底板的来源": func(c *Config) { c.Sources = c.Sources[1:] },
+	} {
+		c := cfg
+		c.Sources = slices.Clone(cfg.Sources)
+		c.Profiles = slices.Clone(cfg.Profiles)
+		c.Profiles[0].Sources = slices.Clone(cfg.Profiles[0].Sources)
+		edit(&c)
+		if w := put(c); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "不能更换") {
+			t.Errorf("%s应被拒绝: HTTP %d %s", name, w.Code, w.Body)
+		}
+	}
+	// 同一来源引用两次时删掉第一条：底板顺延到下一条，来源没变，允许
+	cfg.Profiles[0].Sources = []SourceRef{ref(A), ref(B), ref(A)}
+	cfg = decode[Config](t, put(cfg))
+	cfg.Profiles[0].Sources = cfg.Profiles[0].Sources[1:]
+	if got := decode[Config](t, put(cfg)); got.Profiles[0].Base != A {
+		t.Errorf("底板 = %q", got.Profiles[0].Base)
+	}
+
+	// 旧数据里底板为空的订阅组（直接写进存储，模拟以前「稍后再选」留下的）可以补选
+	old := a.store.Config()
+	old.Profiles = append(old.Profiles, Profile{ID: "dddddddddddddddd", Name: "乙", Sources: []SourceRef{}})
+	if err := a.store.SetConfig(&old, -1); err != nil {
+		t.Fatal(err)
+	}
+	old = a.store.Config()
+	old.Profiles[1].Sources = []SourceRef{ref(B)}
+	if got := decode[Config](t, put(old)); got.Profiles[1].Base != B {
+		t.Errorf("补选的底板 = %q", got.Profiles[1].Base)
+	}
+}
+
 // 保存时要带上加载时的版本号：对不上就拒绝，除非明确要求覆盖。
 func TestSaveConflict(t *testing.T) {
 	a, do := newTestApp(t)
@@ -139,7 +194,8 @@ func TestSaveConflict(t *testing.T) {
 		return do("PUT", "/api/config"+query, string(b))
 	}
 	first := a.store.Config()
-	first.Profiles = []Profile{{Name: "甲"}}
+	first.Sources = []Source{{ID: "aaaaaaaaaaaaaaaa", Name: "机场", URL: "https://a.example/s"}}
+	first.Profiles = []Profile{{Name: "甲", Base: "aaaaaaaaaaaaaaaa", Sources: []SourceRef{{Source: "aaaaaaaaaaaaaaaa"}}}}
 	saved := decode[Config](t, put(first, ""))
 	if saved.Revision != first.Revision+1 {
 		t.Fatalf("保存后版本号应加一: %d → %d", first.Revision, saved.Revision)

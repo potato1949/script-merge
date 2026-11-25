@@ -338,7 +338,8 @@ func validateConfig(c *Config, tokens map[string]string) error {
 			}
 		}
 		p.Sources = refs
-		// 底板必须是本组引用的远程来源；不是的话改用第一个远程来源，没有就留空（生成时报错提示）
+		// 底板必须是本组引用的远程来源；不是的话改用第一个远程来源，没有就留空（生成时报错提示）。
+		// 保存时 checkBaseLocked 再检查底板有没有被换掉
 		base := sourceIDs[p.Base]
 		if !slices.ContainsFunc(refs, func(r SourceRef) bool { return r.Source == base }) || kinds[base] != "remote" {
 			base = ""
@@ -360,16 +361,40 @@ func validateConfig(c *Config, tokens map[string]string) error {
 	return nil
 }
 
+// checkBaseLocked 检查规范化后的配置有没有换掉底板：新建的订阅组必须选好底板，已有的订阅组底板不能变
+// （包括删掉底板的引用或来源）。只有旧数据里底板为空的订阅组可以补选。
+func checkBaseLocked(c *Config, old []Profile) error {
+	bases := map[string]string{}
+	for _, p := range old {
+		bases[p.ID] = p.Base
+	}
+	for _, p := range c.Profiles {
+		was, exists := bases[p.ID]
+		switch {
+		case !exists && p.Base == "":
+			return errors.New("新建订阅组「" + p.Name + "」时必须选一个机场订阅做底板")
+		case exists && was != "" && p.Base != was:
+			return errors.New("订阅组「" + p.Name + "」的底板创建后不能更换，也不能删除底板的引用或来源")
+		}
+	}
+	return nil
+}
+
 func (a *App) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	var c Config
 	if !readJSON(w, r, &c) {
 		return
 	}
+	old := a.store.Config().Profiles
 	tokens := map[string]string{}
-	for _, p := range a.store.Config().Profiles {
+	for _, p := range old {
 		tokens[p.ID] = p.Token
 	}
 	if err := validateConfig(&c, tokens); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := checkBaseLocked(&c, old); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
