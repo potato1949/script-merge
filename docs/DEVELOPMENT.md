@@ -290,7 +290,7 @@ go vet ./... && gofmt -l .
 
 ## 版本号
 
-程序版本是 `主.次.修订`（`vX.Y.Z`），从 v1.0.0 开始。版本号只来自 `main` 上带注释的 git tag，代码里不写死。
+程序版本是 `主.次.修订`（`vX.Y.Z`），从 v1.0.0 开始，取自 git tag，代码里不写死。发布的约定是在 `main` 上打带注释的 tag；程序不检查 tag 类型和所在分支，所以同一个提交只打一个发布 tag，也不要打临时的 `v*` tag。
 
 | 加哪一位 | 什么时候 | 例子 |
 | --- | --- | --- |
@@ -303,13 +303,18 @@ go vet ./... && gofmt -l .
 - `cacheFormat` 加一不算不兼容（旧缓存自动视为过期），按同一次改动的其他内容定
 - 不是每个提交都打 tag，攒到要部署 / 发布时再打。打之前在 `main` 上跑完 `go vet`、`gofmt -l`、`go test`
 - tag 说明写这一版的变化摘要（中文），它就是更新记录
+- **加主版本时先改 `go.mod`**：模块路径改成 `module script-merge/vN`（v2 起；单个 `package main`，没有内部导入路径，只改这一行），和这一版的改动一起提交，再在这个提交上打 tag。不改的话 Go 按模块版本规则会忽略 v2 及以上的 tag，`go build` 出的程序显示提交号，同一提交上还有 v1 的 tag 时甚至显示成旧版本。单元测试发现不了（tag 在写进构建信息前就被过滤了），打完 tag 后 `go build` 一次，用 `go version -m script-merge` 确认 `mod` 一行的版本就是新 tag
 
 ```bash
 git tag -a v1.1.0 -m "v1.1.0：……"
 git push origin v1.1.0
 ```
 
-程序里显示的版本（`version.go`）：`-ldflags "-X main.version=…"` 指定的优先；否则当前提交正好在 tag 上时，用 `go build` 自动写进构建信息的 tag（Go 1.24 起）；再否则显示提交号前 7 位。Docker 构建拿不到 `.git`，由 `docker-compose.yml` 把环境变量 `VERSION` 作为构建参数传进去，用 `git describe --tags --always --dirty`，tag 之后还有提交时显示成 `v1.1.0-3-gabc1234`。
+程序里显示的版本（`version.go`）：`-ldflags "-X main.version=…"` 指定的优先；否则当前提交正好在 tag 上时，用 `go build` 自动写进构建信息的 tag（Go 1.24 起）；再否则显示提交号前 7 位。Docker 构建拿不到 `.git`，由 `docker-compose.yml` 把环境变量 `SCRIPT_MERGE_VERSION` 作为构建参数 `VERSION` 传进去（外面的变量名带项目前缀，免得误用 shell 或 `.env` 里别的工具的 `VERSION`），用 `git describe --tags --always --dirty`，tag 之后还有提交时显示成 `v1.1.0-3-gabc1234`；PowerShell 的写法见 README。这条路径只有版本字符串，没有提交号和时间。
+
+- 指定的版本号末尾的 `-dirty` 当作状态标记：去掉后标记为「含未提交的修改」，和 `go build` 的显示一致。所以预发布名不要用 `-dirty`
+- 两条路径对「未提交的修改」的判断不完全相同：`git describe --dirty` 不算未跟踪的文件，`go build` 算
+- 两条路径选 tag 的规则也不同：`go build` 按 Go 模块版本规则（只认语义版本、主版本要和模块路径对上），`git describe --tags` 认任何 tag，同一提交有多个 tag 时挑法也不一样。按上面的约定打 tag 就不会有差别
 
 ## 已知限制
 

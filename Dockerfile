@@ -3,7 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-# .git 不在构建上下文里，版本号要从外面传：VERSION=$(git describe --tags --always --dirty) docker compose up -d --build
+# .git 不在构建上下文里，版本号要从外面传：SCRIPT_MERGE_VERSION=$(git describe --tags --always --dirty) docker compose up -d --build
 ARG VERSION=
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /script-merge .
 

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// version 由编译参数指定：go build -ldflags "-X main.version=v1.2.0"。
+// version 由编译参数指定：go build -ldflags "-X main.version=v1.2.0"。末尾的 -dirty 表示有未提交的修改。
 // 没指定时从构建信息里取：当前提交正好打了版本 tag 就用 tag（Go 1.24 起 go build 自动带上），
 // 否则用 git 提交号（go run 和不带 .git 的 Docker 构建都没有）。
 var version string
@@ -35,7 +35,10 @@ type BuildInfo struct {
 var buildInfo = readBuildInfo()
 
 func readBuildInfo() BuildInfo {
-	b := BuildInfo{Version: version}
+	// git describe --dirty 在版本号末尾加的 -dirty 只是状态标记（Docker 构建靠它），
+	// 去掉后和 go build 一样用「已修改」表示
+	v, dirty := strings.CutSuffix(version, "-dirty")
+	b := BuildInfo{Version: v}
 	if bi, ok := debug.ReadBuildInfo(); ok {
 		if b.Version == "" {
 			b.Version = tagVersion(bi.Main.Version)
@@ -51,6 +54,7 @@ func readBuildInfo() BuildInfo {
 			}
 		}
 	}
+	b.Modified = b.Modified || dirty
 	if b.Version == "" && len(b.Commit) >= 7 {
 		b.Version = b.Commit[:7]
 	}

@@ -24,6 +24,17 @@ func TestBuildInfo(t *testing.T) {
 	if b := readBuildInfo(); b.Version != "v1.2.0" || b.String() == "开发版" {
 		t.Errorf("指定的版本号: %+v", b)
 	}
+	// git describe --dirty 的后缀转成「已修改」标记
+	for in, want := range map[string]string{
+		"v1.2.0-dirty":            "v1.2.0",
+		"v1.2.0-3-gabc1234-dirty": "v1.2.0-3-gabc1234",
+		"abc1234-dirty":           "abc1234",
+	} {
+		version = in
+		if b := readBuildInfo(); b.Version != want || !b.Modified {
+			t.Errorf("版本号 %q: %+v，应为 %q 且已修改", in, b, want)
+		}
+	}
 	version = ""
 	if b := readBuildInfo(); b.Version == "" && b.String() != "开发版" {
 		t.Errorf("没有版本信息时: %q", b.String())
