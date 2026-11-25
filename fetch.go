@@ -123,13 +123,12 @@ func (f *Fetcher) fetchArgs(cfg Config, s Source) (url, ua, unlockUA string) {
 	return strings.TrimSpace(s.URL), f.userAgent(cfg), firstNonEmpty(strings.TrimSpace(cfg.UnlockUserAgent), chromeUA)
 }
 
-// userAgent 是拉取上游实际用的 UA：开了跟随版本且已查到版本时用 clash-verge/<最新版本>，
-// 否则用全局设置里填的，都没有则用 defaultUA。
+// userAgent 是拉取上游实际用的 UA。两种模式二选一：
+// 跟随版本时用 clash-verge/<最新版本>，还没查到版本时用 defaultUA（不用手填的那个：界面上这时看不到它）；
+// 自定义时用全局设置里填的，空则用 defaultUA。
 func (f *Fetcher) userAgent(cfg Config) string {
 	if cfg.FollowUA {
-		if ua := f.UA.State().UA(); ua != "" {
-			return ua
-		}
+		return firstNonEmpty(f.UA.State().UA(), defaultUA)
 	}
 	return firstNonEmpty(strings.TrimSpace(cfg.UserAgent), defaultUA)
 }

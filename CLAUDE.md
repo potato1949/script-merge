@@ -72,7 +72,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 上游拉取与缓存（`fetch.go`）
 
-- 拉取 UA 只有全局的一个，没有透传：`Fetcher.userAgent` 在开了 `Config.FollowUA` 且已查到版本时用 `clash-verge/<最新版本>`（`uafollow.go`，查 GitHub `releases/latest` 的跳转，不用限流严重的 api.github.com；成功后 30 天再查），否则用 `Config.UserAgent`，空则 `defaultUA`。拉取参数一律经 `Fetcher.fetchArgs` 算，保证缓存键一致
+- 拉取 UA 只有全局的一个，没有透传：`Fetcher.userAgent` 按两种模式二选一（界面上是分段按钮，只显示所选模式的内容）：开了 `Config.FollowUA` 时用 `clash-verge/<最新版本>`（`uafollow.go`，查 GitHub `releases/latest` 的跳转，不用限流严重的 api.github.com；成功后 30 天再查），还没查到版本时用 `defaultUA`，不用手填的 `UserAgent`（这时界面上看不到它）；否则用 `Config.UserAgent`，空则 `defaultUA`。拉取参数一律经 `Fetcher.fetchArgs` 算，保证缓存键一致
 - 缓存键 = 来源 ID + hash(链接 + UA + 解锁地址，有解锁地址时再加解锁 UA)，所以引用同一个来源的订阅组共用缓存。加了影响拉取结果的字段（不论在 `Source` 还是全局），必须加进 `cacheKey`；`SourceRef` 上的字段只影响拉到之后怎么用，不进缓存键
 - 失败时只回退到**同一个键**的旧缓存，不跨链接 / UA 回退（这是用户明确要求的行为）
 - 解锁地址是一次独立的普通 GET，UA 用全局的解锁 UA（`Config.UnlockUserAgent`，空则 `chromeUA`），不与订阅请求共享 Cookie（同样是用户明确要求）
@@ -103,7 +103,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`saved`、`changes` / `dirty`、`page`、`pi`、`tab`、`srcStatus`、`uaVer`、`previews`、`accessLog`）。页面：订阅组（标签页：节点来源 / Parser / 预览 / 本组设置）、节点来源、全局设置。
 
-- **未保存的修改靠对比得出**：`saved` 是最近一次从服务端拿到的配置，`markDirty()` 用 `diffConfig(cfg, saved)` 算出 `changes`，并更新渲染时用 `watch()` 登记的标记（圆点、输入框竖条、计数），不重绘。给配置加用户可改的字段时要加进 `diffConfig` 的 `*_FIELDS`；拿到服务端返回的新配置后要同时更新 `saved`
+- **未保存的修改靠对比得出**：`saved` 是最近一次从服务端拿到的配置，`markDirty()` 用 `diffConfig(cfg, saved)` 算出 `changes`，并更新渲染时用 `watch()` 登记的标记（圆点、输入框竖条、计数），不重绘。标记画在控件内侧，不向外凸出；控件里的文字要和同一列的标题、输入框文字左对齐（加分段按钮、标签页、表格这类带内边距的控件时注意）。给配置加用户可改的字段时要加进 `diffConfig` 的 `*_FIELDS`；拿到服务端返回的新配置后要同时更新 `saved`
 
 - 来源的新建、修改、删除只在「节点来源」页（`sourcesPage` + `sourceFields`），免得在一个组里顺手一改、别的组跟着变。订阅组的节点来源标签页（`tabSubs`）只能选用已有来源、移除引用、设为底板、改 `SourceRef` 上的字段，来源内容只读展示；增删引用后调 `fixBase`。用户明确要求：订阅组里不放新建来源、跳转到「节点来源」页的入口，也不放底板的策略组 / 规则说明
 - 界面上不加解释性的说明文字（用户明确要求），状态、错误、警告这类必要信息除外

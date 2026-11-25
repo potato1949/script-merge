@@ -1,3 +1,5 @@
 /data/
 *.exe
+# Windows 上覆盖运行中的程序时 go build 留下的旧程序备份；不忽略的话编译出的版本会带「已修改」标记
+*.exe~
 /script-merge

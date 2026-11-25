@@ -40,7 +40,7 @@ func TestUAFollow(t *testing.T) {
 	ua := func() string { _, ua, _ := f.fetchArgs(cfg, Source{URL: "http://x"}); return ua }
 
 	cfg.FollowUA = true
-	if got := ua(); got != "manual/1.0" { // 还没查到版本时用手填的
+	if got := ua(); got != defaultUA { // 还没查到版本时用内置的，不用手填的
 		t.Errorf("没查到版本时 UA = %q", got)
 	}
 	if v := f.UA.Check(); v.Version != "v2.5.10" || v.Error != "" {

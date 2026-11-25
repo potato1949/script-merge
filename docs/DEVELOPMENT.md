@@ -77,7 +77,7 @@ Config
 
 ```
 1. 本组用到的来源：底板排第一个（不看启用开关），其余是启用的引用
-2. 并发拉取       remote：Fetcher.Get（UA 见 Fetcher.userAgent：跟随版本时的 clash-verge/<版本>，否则全局的 UserAgent，空则 defaultUA）
+2. 并发拉取       remote：Fetcher.Get（UA 见 Fetcher.userAgent：跟随版本时的 clash-verge/<版本>，自定义时全局的 UserAgent，空则 defaultUA）
                  manual：parseCustomProxies 解析 Nodes
    底板没拿到（拉取失败且没有缓存），或者内容里没有策略组 → 返回错误，不输出
 3. root = 底板配置（去掉 proxies 后的整份，深拷贝）
@@ -117,7 +117,7 @@ Config
 
 ### 上游拉取与缓存（`fetch.go`）
 
-- 每次拉取：先 GET `UnlockURL`（若有），再 GET 订阅地址。解锁只是一次普通的 GET——上游要求该地址被访问过之后才放行订阅——两次请求互相独立，不共享 Cookie（用户明确要求）。解锁请求用全局的解锁 UA `Config.UnlockUserAgent`（为空用 `chromeUA`），订阅请求的 UA 由 `Fetcher.userAgent` 决定：开了 `Config.FollowUA` 且已查到版本时用 `clash-verge/<最新版本>`，否则用 `Config.UserAgent`（为空用 `defaultUA`）。解锁请求只在网络失败时报错，不检查状态码
+- 每次拉取：先 GET `UnlockURL`（若有），再 GET 订阅地址。解锁只是一次普通的 GET——上游要求该地址被访问过之后才放行订阅——两次请求互相独立，不共享 Cookie（用户明确要求）。解锁请求用全局的解锁 UA `Config.UnlockUserAgent`（为空用 `chromeUA`），订阅请求的 UA 由 `Fetcher.userAgent` 决定，两种模式二选一：开了 `Config.FollowUA` 时用 `clash-verge/<最新版本>`，还没查到版本时用 `defaultUA`（不拿手填的 `UserAgent` 兜底：界面上选了跟随后输入框是隐藏的，用它就成了看不见的行为）；否则用 `Config.UserAgent`（为空用 `defaultUA`）。解锁请求只在网络失败时报错，不检查状态码
 - 订阅内容解析（`parseSubscription`）：Clash YAML（有 `proxies`）→ base64 解码后的分享链接 → 明文分享链接。YAML 除了节点，其余内容整份存进 `upstream.Doc`，键统一转成字符串（`stringKeys`，否则 `map[any]any` 存不进 JSON 缓存）
 - 缓存键 = `来源 ID + sha256(链接 + UA + UnlockURL)` 的前缀（`cacheKey`）；有解锁地址时解锁 UA 也计入。**给拉取加了影响结果的输入（不论在 `Source` 还是全局），必须加进 `cacheKey`**；`SourceRef` 上的字段只影响拉到之后怎么用，不进缓存键
 - 内存一份 + `DATA_DIR/cache/<key>.json` 一份，启动时全部读入内存。缓存经过 JSON 往返后整数会变成 `float64`，`toNode` 会把整数值的 float 还原成整数输出
@@ -125,9 +125,9 @@ Config
 - **失败时的回退**：`Fetcher.Get` 失败返回 `(同一个键的旧缓存或 nil, err)`，**不会**回退到其他链接 / UA 的结果（用户明确要求）。`Build` 据此设置 `SubStatus.Stale`
 - 缓存内容有格式版本（`cacheFormat`）：改了缓存里存什么就加一，旧格式的缓存视为已过期（拉取失败时仍可作为旧缓存用）
 - 来源 ID 被用作缓存文件名，所以 `validateConfig` 只接受 16 位十六进制且全局唯一的 ID，其他一律重新生成（防路径穿越）；来源 ID 变了，订阅组里的引用和底板跟着改
-- **UA 跟随版本**（`uafollow.go`）：`Config.FollowUA` 开启时，`followUALoop` 每小时看一次是否到期，到期就查 `github.com/clash-verge-rev/clash-verge-rev/releases/latest` 的跳转地址（`…/releases/tag/vX.Y.Z`，只认数字版本号）。不用 `api.github.com`：未登录的接口按 IP 每小时限 60 次，共用出口 IP 时实测直接 403。成功后 30 天再查，失败后隔 1 天重试（版本号不用跟得很紧，用户要求一个月一次），失败时保留之前的版本。保存配置时如果开着跟随也会检查一次是否到期；界面上的「立即检查」不看间隔（`POST /api/ua-version`）。结果存在 `DATA_DIR/ua-version.json`，重启后沿用。版本变了 UA 就变了，缓存键随之改变，各来源下次会重新拉取
+- **UA 跟随版本**（`uafollow.go`）：`Config.FollowUA` 开启时，`followUALoop` 每小时看一次是否到期，到期就查 `github.com/clash-verge-rev/clash-verge-rev/releases/latest` 的跳转地址（`…/releases/tag/vX.Y.Z`，只认数字版本号）。不用 `api.github.com`：未登录的接口按 IP 每小时限 60 次，共用出口 IP 时实测直接 403。成功后 30 天再查，失败后隔 1 天重试（版本号不用跟得很紧，用户要求一个月一次），失败时保留之前的版本。保存配置时如果开着跟随也会检查一次是否到期；界面上的「立即检查」不看间隔（`POST /api/ua-version`）。结果存在 `DATA_DIR/ua-version.json`，重启后沿用。界面上是「跟随 Clash Verge Rev 最新版 / 自定义」分段按钮（`uaField`），跟随时只显示当前版本、检查时间和「立即检查」，自定义时才显示输入框；切到跟随而还没有版本时立即查一次。版本变了 UA 就变了，缓存键随之改变，各来源下次会重新拉取
 - `Fetcher.state` 记下每个来源最近一次**实际请求上游**的结果（`SourceState`：时间、错误、上次成功的时间 / 节点数 / 流量信息 / 策略组名），`GET /api/source-status` 给界面用：来源的状态标签、流量信息、前置代理的候选。只在内存里，重启后从磁盘缓存恢复成功的部分
-- 「节点来源」页展开来源时顶部是信息面板（`sourceFacts`：缓存和使用它的订阅组），远程来源显示它的缓存（`POST /api/source-cache`）：节点数、创建时间、过期时间和剩余时间（按响应里服务端的 `now` 换算，不受浏览器时钟偏差影响），可以「刷新缓存」（跳过缓存重新拉取这一个来源）和「下载配置文件」（`POST /api/source-download`，把缓存还原成完整的 Clash 配置：`upstream.config()` 把节点放回 `proxies`，经 `encodeYAML` 输出，不是上游的原始文本）。两个接口和预览一样带着前端当前的配置，缓存键按其中的链接、UA 算（`fetchArgs`，和 `Build` 共用）；只校验全局设置和节点来源，订阅组的内容不影响。前端按 `cacheSig()`（链接、解锁地址、UA、缓存时长）判断设置变了没有，变了或重新进入这个页面时重新读取
+- 「节点来源」页展开来源时顶部是信息面板（`sourceFacts`：缓存和使用它的订阅组），远程来源显示它的缓存（`POST /api/source-cache`）：节点数、创建时间、过期时间和剩余时间（按响应里服务端的 `now` 换算，不受浏览器时钟偏差影响），可以「刷新缓存」（跳过缓存重新拉取这一个来源）和「下载配置文件」（`POST /api/source-download`，把缓存还原成完整的 Clash 配置：`upstream.config()` 把节点放回 `proxies`，经 `encodeYAML` 输出，不是上游的原始文本）。两个接口和预览一样带着前端当前的配置，缓存键按其中的链接、UA 算（`fetchArgs`，和 `Build` 共用）；只校验全局设置和节点来源，订阅组的内容不影响。前端按 `cacheSig()`（链接、解锁地址、UA、跟随版本时的版本号、缓存时长）判断设置变了没有，变了或重新进入这个页面时重新读取；读取前先 `GET /api/ua-version` 同步版本（服务端可能已在后台换了 UA，缓存键随之改变）
 - **代理**：只走环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`。`fetchSubscription` 的 `http.Client` 没有自定义 `Transport`，落在 `http.DefaultTransport` 上，它本身就读这几个变量。**以后换了自定义 `Transport`，要带上 `Proxy: http.ProxyFromEnvironment`**，否则代理静默失效——`TestFetchUsesProxy` 会发现。标准库对回环地址永远不走代理，且环境变量只在第一次发请求时读一次，所以测试在 `TestMain` 里设置代理，并用一个不存在的域名当上游
 
 上游内容只认 Clash YAML 或分享链接列表，输出始终是 Clash YAML。以后支持其他客户端的做法见 [CLIENT-SUPPORT.md](CLIENT-SUPPORT.md)。
@@ -207,7 +207,7 @@ Config
 - **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页（节点来源、Parser、预览、本组设置），每个对应一个 `tabXxx(p)`
 - **节点来源标签页 `tabSubs(p)`**：底板那行带「底板」标签、启用框禁用；其他远程来源有「设为底板」。只能选用已有来源、移除引用、改 `SourceRef` 上的字段；来源内容只读（`sourceSummary`），新建、修改和删除只在「节点来源」页（`sourcesPage`），免得在一个组里顺手一改、别的组跟着变。订阅组里不放新建来源或跳转到「节点来源」页的入口。增删引用后调 `fixBase(p)`
 - **`field(label, obj, key, opts)`**：绑定到 `obj[key]` 的表单控件，输入时写回并调 `markDirty()`。不属于配置的临时输入传 `local: true`
-- **未保存的修改**：加载、保存成功、重置令牌后把配置存一份到 `saved`。`markDirty()` 用 `diffConfig(cfg, saved)` 逐项对比得出 `changes`（改回原值的不算），每项带位置（`page` / `pid` / `tab`）、对象和字段（`obj` / `key`）以及清单上显示的文字。引用没有 ID，按「同一来源的第 n 次引用」配对。页面上的标记（左栏、标签页、行上的圆点 `dot()`，输入框的竖条 `track()`）在渲染时用 `watch()` 登记，`markDirty()` 时逐个更新，不重绘。清单里点一项调 `jump()`：切页面和标签页、展开行、滚动并聚焦到输入框。「放弃修改」把 `cfg` 换回 `saved` 的副本，并丢掉用未保存内容生成的预览。给配置加了用户可改的字段，要加进 `diffConfig` 对应的 `*_FIELDS`，否则改了它不会被当成修改
+- **未保存的修改**：加载、保存成功、重置令牌后把配置存一份到 `saved`。`markDirty()` 用 `diffConfig(cfg, saved)` 逐项对比得出 `changes`（改回原值的不算），每项带位置（`page` / `pid` / `tab`）、对象和字段（`obj` / `key`）以及清单上显示的文字。引用没有 ID，按「同一来源的第 n 次引用」配对。页面上的标记（左栏、标签页、行上的圆点 `dot()`，输入框的竖条 `track()`）在渲染时用 `watch()` 登记。标记一律画在控件内侧（`inset` 阴影），不向外凸出，免得控件看起来和同一列错开；复选框只出现在来源行里，靠行上的圆点标出，不单独加标记。被隐藏的字段要把标记和跳转挂到可见的控件上（如跟随版本时隐藏的自定义 UA 挂在分段按钮上），`markDirty()` 时逐个更新，不重绘。清单里点一项调 `jump()`：切页面和标签页、展开行、滚动并聚焦到输入框。「放弃修改」把 `cfg` 换回 `saved` 的副本，并丢掉用未保存内容生成的预览。给配置加了用户可改的字段，要加进 `diffConfig` 对应的 `*_FIELDS`，否则改了它不会被当成修改
 - **`item(obj, opts)`**：可展开的行。展开状态记在 `openItems`（WeakSet，按对象引用），重绘和排序后仍保持展开。`body(nameEl)` 只在展开时构建
 - **`dialog(title, build, actions)`**：基于原生 `<dialog>` 的对话框
 - **`newID()`**：按服务端的格式生成 ID。新建来源和订阅组时用它，这样不用先保存就能被引用、预览；令牌始终由服务端发，判断「还没保存过」看 `p.token`
@@ -293,7 +293,7 @@ go vet ./... && gofmt -l .
 - `TestSaveConflict` / `TestPreviewUnsavedAndSourceStatus`：拿着旧版本号保存被拒绝、`force` 能覆盖；预览不落盘；来源状态在成功、失败、重启后的取值
 - `TestPreviewCachedOnly`：只用缓存的预览不请求上游；底板没缓存返回 `noCache`；其他来源没缓存只做标记；过期的缓存照用
 - `TestSourceCacheAPI`：来源缓存按请求里的设置查找、不请求上游；刷新跳过缓存、失败时带原因并保留旧缓存；换 UA 后是另一份缓存；下载还原出完整配置；Parser 写错不影响
-- `TestUAFollow` / `TestUAVersionDue` / `TestUAFollowAPI`：跟随版本时的 UA 与回退、版本落盘、查询失败或版本号无法识别时保留旧版本、检查间隔；预览拉取上游用的是查到的版本
+- `TestUAFollow` / `TestUAVersionDue` / `TestUAFollowAPI`：跟随版本时的 UA、还没查到版本时用 defaultUA、版本落盘、查询失败或版本号无法识别时保留旧版本、检查间隔；预览拉取上游用的是查到的版本
 - `TestNodeHosts` / `TestParseSubscriptionKeepsDoc`：hosts 的查找与合并；上游配置去掉节点后整份留下、非字符串的键能存进缓存
 - `TestAccessLog` / `TestClientIP` / `TestBuildInfo` / `TestTagVersion` / `TestCommands` / `TestParserOrder` / `TestURIs`：见各自的注释
 

@@ -53,20 +53,28 @@ main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .ws-top { display: flex; align-items: center; gap: 10px; min-height: 44px; }
 .ws-top h2, .title-input { font: 500 28px/1.2 var(--serif); letter-spacing: .01em; margin: 0; }
 .ws-top h2 { margin-right: auto; }
-/* 未保存的修改：保存按钮旁的修改清单入口、各处的圆点、改过的输入框左侧的竖条 */
+/* 未保存的修改：保存按钮旁的修改清单入口、各处的圆点、改过的输入框左侧的竖条（标记都画在控件内侧，不向外凸出；
+   复选框只在来源行里，靠行上的圆点标出，不单独加标记） */
 button.changes { border-color: transparent; background: none; color: var(--warn); font-size: 13px; padding: 4px 8px; }
 button.changes:hover:not(:disabled) { border-color: var(--warn); }
 .dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: middle; }
 input.changed, textarea.changed { box-shadow: inset 3px 0 0 var(--accent); }
-input[type=checkbox].changed { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pick.changes button { flex-direction: column; align-items: stretch; gap: 2px; }
 .pick.changes small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 [hidden] { display: none !important; }
-.tabs { display: flex; gap: 2px; margin-top: 10px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.tabs { display: flex; gap: 24px; margin-top: 10px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .ws-head.plain { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
-.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 9px 12px 8px; white-space: nowrap; }
+/* 标签不带左右内边距：第一个标签的文字和标题、下面的内容左对齐，下划线和文字等宽 */
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 9px 0 8px; white-space: nowrap; }
 .tabs button:hover { color: var(--text); }
 .tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.ua-field { display: flex; flex-direction: column; gap: 8px; }
+.ua-field > .lbl { font-size: 12.5px; color: var(--muted); }
+.seg { display: inline-flex; align-self: flex-start; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 10px; background: var(--sunken); }
+.seg button { border: 0; border-radius: 7px; background: none; color: var(--muted); padding: 5px 8px; } /* 3px + 8px：文字和输入框里的文字对齐 */
+.seg button:hover { color: var(--text); }
+.seg button.on { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 18%, transparent); }
+.seg.changed { box-shadow: inset 3px 0 0 var(--accent); }
 .tabs .n { margin-left: 6px; font-size: 12px; color: var(--muted); font-weight: 400; }
 .content { padding-top: 18px; }
 
@@ -147,6 +155,9 @@ pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8
 .tblwrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; min-width: 820px; }
 td, th { padding: 4px; text-align: left; font-size: 12.5px; vertical-align: middle; }
+/* 首尾两列不留外侧内边距，文字和卡片标题对齐 */
+td:first-child, th:first-child { padding-left: 0; }
+td:last-child, th:last-child { padding-right: 0; }
 th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 td input[type=text], td select { padding: 5px 8px; font-size: 13px; }
 td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -155,6 +166,7 @@ td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-spa
 dialog { border: 1px solid var(--line); border-radius: 14px; padding: 22px; background: var(--surface); color: var(--text); width: min(480px, 92vw); box-shadow: 0 18px 50px rgba(20, 20, 19, .18); }
 dialog::backdrop { background: rgba(20, 20, 19, .38); }
 dialog .hint { margin-bottom: 14px; }
+dialog h3 + .pick { margin-top: 12px; }
 dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .pick { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow-y: auto; }
 .pick button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; background: var(--bg); border-color: var(--line); }
@@ -410,11 +422,11 @@ async function save() {
 const PROFILE_FIELDS = [['name', '名称'], ['base', '底板', { tab: 'subs' }], ['parser', 'Parser', { tab: 'parser', long: true }], ['fileName', '显示名称', { tab: 'more' }]];
 const REF_FIELDS = [['enabled', '启用'], ['prefix', '节点名前缀'], ['include', '只保留'], ['exclude', '排除'], ['dialer', '前置代理']];
 const SOURCE_FIELDS = [['name', '名称'], ['url', '订阅链接'], ['unlockUrl', '解锁地址'], ['nodes', '节点', { long: true }]];
-const GLOBAL_FIELDS = [['cacheMinutes', '缓存时间'], ['updateInterval', '建议客户端更新间隔'], ['userAgent', '拉取订阅用的 UA'], ['followUA', 'UA 跟随 Clash Verge Rev 版本'], ['unlockUserAgent', '解锁 UA']];
+const GLOBAL_FIELDS = [['cacheMinutes', '缓存时间'], ['updateInterval', '建议客户端更新间隔'], ['userAgent', '拉取订阅用的 UA'], ['followUA', '拉取 UA 的方式'], ['unlockUserAgent', '解锁 UA']];
 function diffConfig(cur, old) {
   const out = [], label = x => `「${x?.name || '(未命名)'}」`;
   const srcName = id => label(cur.sources.find(s => s.id === id) || old.sources.find(s => s.id === id));
-  const show = (key, v) => key === 'base' ? (v ? srcName(v) : '（无）') : typeof v === 'boolean' ? (v ? '启用' : '停用') : String(v).trim() === '' ? '（空）' : String(v);
+  const show = (key, v) => key === 'followUA' ? (v ? '跟随 Clash Verge Rev 最新版' : '自定义') : key === 'base' ? (v ? srcName(v) : '（无）') : typeof v === 'boolean' ? (v ? '启用' : '停用') : String(v).trim() === '' ? '（空）' : String(v);
   const fields = (a, b, list, at) => {
     for (const [key, what, { tab, long } = {}] of list) if (a[key] !== b[key])
       out.push({ ...at, tab: tab || at.tab, obj: a, key, what, ...(!long && { from: show(key, b[key]), to: show(key, a[key]) }) });
@@ -815,6 +827,8 @@ function tabMore(p) {
 const cacheSig = () => JSON.stringify([cfg.userAgent, cfg.followUA && uaVer.version, cfg.unlockUserAgent, cfg.cacheMinutes, cfg.sources.map(s => [s.id, s.kind, s.url, s.unlockUrl])]);
 // 读取各来源按页面上当前设置（可能还没保存）对应的缓存；带 source 时先跳过缓存重新拉取它。返回服务端的结果
 async function loadSourceCache(source) {
+  // 跟随版本时服务端可能已在后台换了 UA（缓存键随之改变）：先同步版本，签名才和服务端实际用的一致
+  try { uaVer = { ...await api('GET', '/api/ua-version'), checking: uaVer.checking }; } catch { /* 拿不到就沿用已知的 */ }
   const sig = cacheSig();
   try {
     const res = await api('POST', '/api/source-cache', { config: cfg, source });
@@ -913,13 +927,30 @@ async function checkUA() {
 }
 // 跟随版本时实际用的 UA 和查询状态
 function uaFollowStatus() {
-  const v = uaVer, fallback = cfg.userAgent.trim() || DEFAULT_UA;
-  return h('div', { class: 'row wide' },
-    v.version ? h('span', { class: 'tag ok', title: v.okAt && '查到于 ' + fmtTime(v.okAt) }, `当前 clash-verge/${v.version}`)
-      : h('span', { class: 'tag' }, `还没查到版本，暂用 ${fallback}`),
+  const v = uaVer;
+  return h('div', { class: 'row' },
+    v.version ? h('span', { class: 'tag ok', title: v.okAt && '查到于 ' + fmtTime(v.okAt) }, `clash-verge/${v.version}`)
+      : h('span', { class: 'tag' }, `还没查到版本，暂用 ${DEFAULT_UA}`),
     v.error && h('span', { class: 'tag err', title: v.error }, `检查失败 · ${ago(v.checkedAt)}：${v.error}`),
     !v.error && v.checkedAt && h('span', { class: 'hint', style: 'margin:0' }, `检查于 ${ago(v.checkedAt)}`),
     h('button', { class: 'sm', disabled: v.checking, onclick: checkUA }, v.checking ? '检查中…' : '立即检查'));
+}
+// 拉取 UA：「跟随 Clash Verge Rev 最新版」和「自定义」二选一，只显示所选模式的内容
+function uaField() {
+  const pick = follow => {
+    if (cfg.followUA === follow) return;
+    cfg.followUA = follow; markDirty(); render();
+    if (follow && !uaVer.version && !uaVer.checking) checkUA();
+  };
+  const seg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': '拉取订阅用的 UA' },
+    [[true, '跟随 Clash Verge Rev 最新版'], [false, '自定义']].map(([v, text]) =>
+      h('button', { class: cfg.followUA === v ? 'on' : '', role: 'radio', 'aria-checked': String(cfg.followUA === v), onclick: () => pick(v) }, text)));
+  // 跟随时自定义 UA 的输入框是隐藏的：它的修改也标在按钮组上，从修改清单点它也跳到这里
+  const keys = cfg.followUA ? ['followUA', 'userAgent'] : ['followUA'];
+  watch(() => seg.classList.toggle('changed', changes.some(e => e.obj === cfg && keys.includes(e.key))));
+  if (jumpTo?.obj === cfg && keys.includes(jumpTo.key)) jumpEl = seg.querySelector('.on');
+  return h('div', { class: 'ua-field wide' }, h('span', { class: 'lbl' }, '拉取订阅用的 UA'), seg,
+    cfg.followUA ? uaFollowStatus() : field(null, cfg, 'userAgent', { list: 'ua', placeholder: '默认 ' + DEFAULT_UA }));
 }
 function settingsPage() {
   const pw = { old: '', new: '' };
@@ -931,10 +962,7 @@ function settingsPage() {
         h('div', { class: 'grid' },
           field('上游订阅缓存时间（分钟，0 为每次都拉取）', cfg, 'cacheMinutes', { type: 'number', min: 0 }),
           field('建议客户端更新间隔（小时）', cfg, 'updateInterval', { type: 'number', min: 1 }),
-          field('拉取订阅用的 UA', cfg, 'userAgent', { wide: true, list: 'ua', placeholder: '默认 ' + DEFAULT_UA }),
-          h('div', { class: 'wide' }, field('跟随 Clash Verge Rev 最新版本', cfg, 'followUA', { type: 'checkbox',
-            onchange: v => { render(); if (v && !uaVer.version && !uaVer.checking) checkUA(); } })),
-          cfg.followUA && uaFollowStatus(),
+          uaField(),
           field('解锁 UA（访问来源的「解锁地址」时使用）', cfg, 'unlockUserAgent', { wide: true, placeholder: '默认 ' + DEFAULT_UNLOCK_UA }))),
       h('div', { class: 'card' }, h('h3', {}, '管理密码'),
         envPassword ? h('p', { class: 'hint', style: 'margin:0' }, '密码由环境变量 ADMIN_PASSWORD 管理，如需修改请更改部署配置。') : [
