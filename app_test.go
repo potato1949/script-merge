@@ -49,6 +49,9 @@ func addSource(cfg *Config, p *Profile, s Source, r SourceRef) {
 	cfg.Sources = append(cfg.Sources, s)
 	r.Source = s.ID
 	p.Sources = append(p.Sources, r)
+	if p.Base == "" && s.Kind == "remote" { // 第一个远程来源做底板（订阅组必须有底板）
+		p.Base = s.ID
+	}
 }
 
 func testRoot() map[string]any {

@@ -98,13 +98,10 @@ func TestValidateSourcesAndRefs(t *testing.T) {
 		{ID: "aaaaaaaaaaaaaaaa", Name: "和 A 撞 ID"},
 	}
 	p := &cfg.Profiles[0]
+	cfg.Sources = append(cfg.Sources, Source{ID: "remote-bad-id", Name: "C", URL: "https://c.example/s"})
 	p.Sources = []SourceRef{{Source: "not-a-valid-id", Prefix: "[B] "}, {Source: "aaaaaaaaaaaaaaaa", Enabled: true}, {Source: "gone"}, {Source: ""}}
-	p.Base = "gone"
-	cfg.Profiles = append(cfg.Profiles,
-		Profile{Name: "底板是手动节点", Base: "not-a-valid-id", Sources: []SourceRef{{Source: "not-a-valid-id"}, {Source: "aaaaaaaaaaaaaaaa"}}},
-		Profile{Name: "只有手动节点", Base: "not-a-valid-id", Sources: []SourceRef{{Source: "not-a-valid-id"}}},
-		Profile{Name: "底板正常", Base: "aaaaaaaaaaaaaaaa", Sources: []SourceRef{{Source: "aaaaaaaaaaaaaaaa"}}},
-	)
+	p.Base = "aaaaaaaaaaaaaaaa"
+	cfg.Profiles = append(cfg.Profiles, Profile{Name: "底板的 ID 被重新生成", Base: "remote-bad-id", Sources: []SourceRef{{Source: "remote-bad-id"}}})
 	if err := validateConfig(&cfg, map[string]string{p.ID: "tok"}); err != nil {
 		t.Fatal(err)
 	}
@@ -117,13 +114,17 @@ func TestValidateSourcesAndRefs(t *testing.T) {
 	if want := []SourceRef{{Source: b.ID, Prefix: "[B] "}, {Source: "aaaaaaaaaaaaaaaa", Enabled: true}}; !reflect.DeepEqual(p.Sources, want) || p.Token != "tok" {
 		t.Errorf("引用 = %+v", p.Sources)
 	}
-	// 底板不在本组或不是远程来源时，改用本组第一个远程来源，没有就留空
-	var bases []string
-	for _, p := range cfg.Profiles {
-		bases = append(bases, p.Base)
+	if c := cfg.Sources[3]; !validID(c.ID) || cfg.Profiles[1].Base != c.ID {
+		t.Errorf("底板没有跟着来源的新 ID 改: %q，来源 %q", cfg.Profiles[1].Base, c.ID)
 	}
-	if want := []string{"aaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaaa", "", "aaaaaaaaaaaaaaaa"}; !reflect.DeepEqual(bases, want) {
-		t.Errorf("底板 = %q", bases)
+	// 底板不合法直接拒绝，不自动改用别的来源
+	for name, base := range map[string]string{"不存在的来源": "gone", "手动节点": b.ID, "没选": "", "没在本组引用": cfg.Sources[3].ID} {
+		c := cfg
+		c.Profiles = slices.Clone(cfg.Profiles)
+		c.Profiles[0].Base = base
+		if err := validateConfig(&c, nil); err == nil || !strings.Contains(err.Error(), "底板") {
+			t.Errorf("底板是%s应被拒绝: %v", name, err)
+		}
 	}
 
 	cfg.Sources[1].Nodes = "这不是节点"
@@ -132,7 +133,7 @@ func TestValidateSourcesAndRefs(t *testing.T) {
 	}
 }
 
-// 底板在新建订阅组时必须选好，之后不能更换，也不能删掉它的引用或来源；旧数据里底板为空的可以补选。
+// 底板在新建订阅组时必须选好，之后不能更换，也不能删掉它的引用或来源。
 func TestBaseLocked(t *testing.T) {
 	a, do := newTestApp(t)
 	put := func(c Config) *httptest.ResponseRecorder {
@@ -173,16 +174,35 @@ func TestBaseLocked(t *testing.T) {
 		t.Errorf("底板 = %q", got.Profiles[0].Base)
 	}
 
-	// 旧数据里底板为空的订阅组（直接写进存储，模拟以前「稍后再选」留下的）可以补选
-	old := a.store.Config()
-	old.Profiles = append(old.Profiles, Profile{ID: "dddddddddddddddd", Name: "乙", Sources: []SourceRef{}})
-	if err := a.store.SetConfig(&old, -1); err != nil {
+}
+
+// 配置文件里底板不合法的订阅组（以前允许稍后再选、换底板时留下的）打开时整个删掉，不修补；原文件备份。
+func TestOpenStoreDropsProfilesWithoutBase(t *testing.T) {
+	dir := t.TempDir()
+	c := defaultConfig()
+	c.Sources = []Source{{ID: "aaaaaaaaaaaaaaaa", Name: "A", URL: "https://a.example/s"}, {ID: "bbbbbbbbbbbbbbbb", Name: "M", Kind: "manual"}}
+	c.Profiles = []Profile{
+		{ID: "1111111111111111", Name: "正常", Base: "aaaaaaaaaaaaaaaa", Sources: []SourceRef{{Source: "aaaaaaaaaaaaaaaa"}}},
+		{ID: "2222222222222222", Name: "没选底板", Sources: []SourceRef{{Source: "aaaaaaaaaaaaaaaa"}}},
+		{ID: "3333333333333333", Name: "底板是手动节点", Base: "bbbbbbbbbbbbbbbb", Sources: []SourceRef{{Source: "bbbbbbbbbbbbbbbb"}}},
+		{ID: "4444444444444444", Name: "底板没在本组", Base: "aaaaaaaaaaaaaaaa", Sources: []SourceRef{}},
+	}
+	b, _ := json.Marshal(map[string]any{"config": c})
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), b, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	old = a.store.Config()
-	old.Profiles[1].Sources = []SourceRef{ref(B)}
-	if got := decode[Config](t, put(old)); got.Profiles[1].Base != B {
-		t.Errorf("补选的底板 = %q", got.Profiles[1].Base)
+	store, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Config().Profiles; len(got) != 1 || got[0].Name != "正常" || len(store.Config().Sources) != 2 {
+		t.Errorf("订阅组 = %+v", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "config.json.bak")); err != nil {
+		t.Errorf("原文件应备份: %v", err)
+	}
+	if again, _ := OpenStore(dir); len(again.Config().Profiles) != 1 {
+		t.Error("删除后应已保存")
 	}
 }
 

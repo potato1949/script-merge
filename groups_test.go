@@ -91,6 +91,7 @@ func TestNormalizeGroups(t *testing.T) {
 	check := func(groups []ProxyGroup, wantErr string) *Profile {
 		t.Helper()
 		cfg := testConfig()
+		addSource(&cfg, &cfg.Profiles[0], Source{ID: "aaaaaaaaaaaaaaaa", Name: "底板", URL: "https://a.example/s"}, SourceRef{})
 		cfg.Profiles[0].Groups = groups
 		err := validateConfig(&cfg, nil)
 		if (err == nil) != (wantErr == "") || (err != nil && !strings.Contains(err.Error(), wantErr)) {

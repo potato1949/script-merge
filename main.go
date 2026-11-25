@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -338,16 +337,11 @@ func validateConfig(c *Config, tokens map[string]string) error {
 			}
 		}
 		p.Sources = refs
-		// 底板必须是本组引用的远程来源；不是的话改用第一个远程来源，没有就留空（生成时报错提示）。
-		// 保存时 checkBaseLocked 再检查底板有没有被换掉
-		base := sourceIDs[p.Base]
-		if !slices.ContainsFunc(refs, func(r SourceRef) bool { return r.Source == base }) || kinds[base] != "remote" {
-			base = ""
-			if i := slices.IndexFunc(refs, func(r SourceRef) bool { return kinds[r.Source] == "remote" }); i >= 0 {
-				base = refs[i].Source
-			}
+		// 底板必须是本组引用的远程来源，不合法直接拒绝（不猜）。保存时 checkBaseLocked 再检查底板有没有被换掉
+		p.Base = sourceIDs[p.Base]
+		if !validBase(*p, kinds) {
+			return errors.New("订阅组「" + p.Name + "」必须以本组引用的一个机场订阅为底板（底板创建后不能更换，底板的引用和来源也不能删除）")
 		}
-		p.Base = base
 		if err := normalizeGroups(p); err != nil {
 			return err
 		}
@@ -361,20 +355,15 @@ func validateConfig(c *Config, tokens map[string]string) error {
 	return nil
 }
 
-// checkBaseLocked 检查规范化后的配置有没有换掉底板：新建的订阅组必须选好底板，已有的订阅组底板不能变
-// （包括删掉底板的引用或来源）。只有旧数据里底板为空的订阅组可以补选。
+// checkBaseLocked 检查规范化后的配置有没有换掉已有订阅组的底板（底板是否合法由 validateConfig 检查）。
 func checkBaseLocked(c *Config, old []Profile) error {
 	bases := map[string]string{}
 	for _, p := range old {
 		bases[p.ID] = p.Base
 	}
 	for _, p := range c.Profiles {
-		was, exists := bases[p.ID]
-		switch {
-		case !exists && p.Base == "":
-			return errors.New("新建订阅组「" + p.Name + "」时必须选一个机场订阅做底板")
-		case exists && was != "" && p.Base != was:
-			return errors.New("订阅组「" + p.Name + "」的底板创建后不能更换，也不能删除底板的引用或来源")
+		if was, ok := bases[p.ID]; ok && p.Base != was {
+			return errors.New("订阅组「" + p.Name + "」的底板创建后不能更换")
 		}
 	}
 	return nil

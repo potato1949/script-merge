@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -150,7 +152,30 @@ func OpenStore(dir string) (*Store, error) {
 		s.data.Config = defaultConfig()
 		return s, s.save()
 	}
+	// 底板不合法的订阅组（以前允许稍后再选、换底板时留下的）不修补，整个删掉，要求重新配置
+	kinds := map[string]string{}
+	for _, src := range s.data.Config.Sources {
+		kinds[src.ID] = cmp.Or(src.Kind, "remote") // 空值等同 remote
+	}
+	var dropped []string
+	s.data.Config.Profiles = slices.DeleteFunc(s.data.Config.Profiles, func(p Profile) bool {
+		if validBase(p, kinds) {
+			return false
+		}
+		dropped = append(dropped, "「"+p.Name+"」")
+		return true
+	})
+	if len(dropped) > 0 {
+		log.Printf("订阅组%s没有合法的底板，已删除，请重新配置（原配置备份为 config.json.bak）", strings.Join(dropped, ""))
+		_ = os.WriteFile(s.path+".bak", b, 0o600)
+		return s, s.save()
+	}
 	return s, nil
+}
+
+// validBase：底板必须是本组引用的远程来源。kinds 是来源 ID → 类型（规范化后的，remote / manual）。
+func validBase(p Profile, kinds map[string]string) bool {
+	return kinds[p.Base] == "remote" && slices.ContainsFunc(p.Sources, func(r SourceRef) bool { return r.Source == p.Base })
 }
 
 func (s *Store) save() error {
