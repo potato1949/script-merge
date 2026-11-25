@@ -76,6 +76,7 @@ input.changed, textarea.changed { box-shadow: inset 3px 0 0 var(--accent); }
 .checks .ord { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 600; }
 .checks .none { color: var(--muted); }
 /* 新增策略组行首的图标：没有图标时也占位，各行的名称对齐 */
+.row > .fold { margin-left: auto; }
 .gicon { width: 20px; height: 20px; object-fit: contain; display: block; }
 .seg { display: inline-flex; align-self: flex-start; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 10px; background: var(--sunken); }
 .seg button { border: 0; border-radius: 7px; background: none; color: var(--muted); padding: 5px 8px; } /* 3px + 8px：文字和输入框里的文字对齐 */
@@ -246,7 +247,13 @@ let srcCache = null;           // 各来源按页面上当前设置对应的缓�
 const ui = { accessAll: false };
 let uid = 0;                   // 给 datalist 生成不重复的 id
 const nextId = prefix => prefix + (++uid);
-const openItems = new WeakSet(); // 当前展开的行
+// 展开的行：按稳定的键记（rowKey），存在浏览器本地。保存、刷新、切换页面后都保持展开，直到手动收起
+const OPEN_STORE = 'script-merge.open';
+const openKeys = new Set((() => { try { return JSON.parse(localStorage.getItem(OPEN_STORE)) || []; } catch { return []; } })());
+function setOpen(keys, on) {
+  for (const k of [keys].flat()) { if (!k) continue; openKeys.delete(k); if (on) openKeys.add(k); }
+  try { localStorage.setItem(OPEN_STORE, JSON.stringify([...openKeys].slice(-500))); } catch { /* 存不了就只在本次有效 */ }
+}
 const cur = () => cfg.profiles[pi];
 const clone = v => JSON.parse(JSON.stringify(v));
 // 和服务端生成的 ID 同一种格式（16 位十六进制），这样新建的来源、订阅组在保存前就能被引用
@@ -367,13 +374,32 @@ function listButtons(list, i, remove) {
 const datalist = (id, values) => h('datalist', { id }, values.map(v => h('option', { value: v })));
 const empty = (title, text) => h('div', { class: 'empty' }, h('b', {}, title), text);
 
-// 可展开的行。o: { name, lead, chips, status, controls, off, body(nameEl) }；chips 里的数组项 [文字, class] 带额外样式
+// 配置里可展开的行对应的键：来源按 ID；订阅组里的引用没有 ID，按「订阅组 ID + 来源 ID + 同一来源的第 n 次引用」；
+// 新增策略组按 ID。不是这几种的返回 null
+function rowKey(obj) {
+  if (cfg.sources.includes(obj)) return 'src:' + obj.id;
+  for (const p of cfg.profiles) {
+    const i = p.sources.indexOf(obj);
+    if (i >= 0) return `ref:${p.id}:${obj.source}:${p.sources.slice(0, i).filter(r => r.source === obj.source).length}`;
+    if (p.groups.includes(obj)) return `grp:${p.id}:${obj.id}`;
+  }
+  return null;
+}
+// 「全部展开 / 全部收起」：keys 是这个列表里各行的键，有收起的就全部展开，否则全部收起
+function foldAll(keys) {
+  if (keys.length === 0) return null;
+  const allOpen = keys.every(k => openKeys.has(k));
+  return h('button', { class: 'sm', onclick: () => { setOpen(keys, !allOpen); render(); } }, allOpen ? '全部收起' : '全部展开');
+}
+
+// 可展开的行。o: { key, name, lead, chips, status, controls, off, body(nameEl) }；chips 里的数组项 [文字, class] 带额外样式。
+// key 是记展开状态用的键，配置里的对象不用传（由 rowKey 算出），预览结果这类不属于配置的要传
 function item(obj, o) {
-  const open = openItems.has(obj);
+  const key = o.key ?? rowKey(obj), open = openKeys.has(key);
   const nameEl = h('span', { class: 'item-name' }, o.name || '(未命名)');
   const stop = e => e.stopPropagation();
   const head = h('div', { class: 'item-head', role: 'button', tabindex: 0, 'aria-expanded': String(open),
-    onclick: () => { open ? openItems.delete(obj) : openItems.add(obj); render(); },
+    onclick: () => { setOpen(key, !open); render(); },
     onkeydown: e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === head) { e.preventDefault(); head.click(); } } },
     h('span', { class: 'chev', 'aria-hidden': 'true' }),
     o.lead && h('span', { onclick: stop, onkeydown: stop, style: 'display:inline-flex' }, o.lead),
@@ -506,7 +532,7 @@ function affectedProfiles() {
 function jump(e) {
   if (e.pid) { const i = cfg.profiles.findIndex(p => p.id === e.pid); if (i < 0) return; pi = i; if (e.tab) tab = e.tab; }
   page = e.page;
-  if (e.obj && (cfg.sources.includes(e.obj) || cfg.profiles.some(p => p.sources.includes(e.obj) || p.groups.includes(e.obj)))) openItems.add(e.obj);
+  if (e.obj) setOpen(rowKey(e.obj), true);
   jumpTo = e; render();
 }
 function changesDialog() {
@@ -654,7 +680,7 @@ function stateTag(s) {
 // 来源本身只在「节点来源」页新建和修改，免得在一个组里顺手一改、别的组跟着变
 function tabSubs(p) {
   const status = (previews[p.id]?.subs || []).filter(x => !x.noCache), dialerList = nextId('dialers'), bi = baseIndex(p);
-  const use = s => { const r = blankRef(s); p.sources.push(r); fixBase(p); openItems.add(r); markDirty(); render(); };
+  const use = s => { const r = blankRef(s); p.sources.push(r); fixBase(p); setOpen(rowKey(r), true); markDirty(); render(); };
   return [
     datalist(dialerList, srcStatus[p.base]?.groups || []),
     p.sources.length === 0 ? empty('还没有节点来源')
@@ -684,7 +710,8 @@ function tabSubs(p) {
         });
       })),
     h('div', { class: 'row' },
-      h('button', { disabled: cfg.sources.length === 0, title: cfg.sources.length === 0 ? '还没有节点来源' : null, onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源')),
+      h('button', { disabled: cfg.sources.length === 0, title: cfg.sources.length === 0 ? '还没有节点来源' : null, onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源'),
+      h('span', { class: 'fold' }, foldAll(p.sources.map(rowKey)))),
   ];
 }
 // 来源内容的只读概述（订阅组里展示用）
@@ -726,7 +753,7 @@ function tabGroups(p) {
     let n = p.groups.length + 1;
     while (p.groups.some(g => g.name === '新策略组 ' + n)) n++;
     const g = { id: newID(), name: '新策略组 ' + n, groups: [], filter: '' };
-    p.groups.push(g); openItems.add(g); markDirty(); render();
+    p.groups.push(g); setOpen(rowKey(g), true); markDirty(); render();
   };
   return [
     p.groups.length === 0 ? empty('还没有新增的策略组')
@@ -744,7 +771,7 @@ function tabGroups(p) {
           ],
         });
       })),
-    h('div', { class: 'row' }, h('button', { onclick: add }, '+ 新增策略组')),
+    h('div', { class: 'row' }, h('button', { onclick: add }, '+ 新增策略组'), h('span', { class: 'fold' }, foldAll(p.groups.map(rowKey)))),
   ];
 }
 // 选用的底板策略组：候选是底板最近一次拉取到的策略组名，勾选的顺序就是成员的顺序（标上序号）。
@@ -824,10 +851,6 @@ async function loadPreview(p, fetch) {
     res = res.noCache ? { noCache: true } : { ...res, draft: dirty };
   } catch (err) { res = { error: err.message }; }
   if (previewSeq[id] !== seq) return;
-  const old = previews[id]?.subs || [];
-  for (const x of res.subs || []) if (old.some(o => o.index === x.index && o.id === x.id && openItems.has(o))) openItems.add(x);
-  const oldGroups = previews[id]?.newGroups || [];
-  for (const x of res.newGroups || []) if (oldGroups.some(o => o.id === x.id && openItems.has(o))) openItems.add(x);
   previews[id] = res;
   if (page === 'group' && tab === 'preview' && cur()?.id === id) render();
 }
@@ -865,22 +888,24 @@ function tabPreview(p) {
   if (previewFor !== p.id || !preview) { previewFor = p.id; setTimeout(() => loadPreview(p)); }
   const fetchBtn = label => h('button', { class: 'sm', disabled: busy, onclick: () => fetchPreview(p) }, label);
   const missing = (preview?.subs || []).filter(x => x.noCache);
+  const subKey = s => `pv:${p.id}:${s.index}:${s.id}`, groupKey = g => `pvg:${p.id}:${g.id}`;
   return !preview || preview.loading ? empty('正在生成…')
     : preview.noCache ? h('div', { class: 'empty' }, h('b', {}, '底板还没有缓存'), fetchBtn('拉取并生成'))
     : preview.error ? h('div', { class: 'warnbox' }, '生成失败：' + preview.error) : [
       missing.length > 0 && h('div', { class: 'warnbox row' }, h('span', { style: 'margin-right:auto' }, `${quote(missing)}还没有缓存，未并入`), fetchBtn('拉取')),
       preview.draft && dirty && h('div', { class: 'warnbox' }, '包含未保存的修改'),
       preview.subs.length > 0 && h('div', { class: 'list' }, preview.subs.map(s => item(s, {
-        name: s.name, chips: [s.base && ['底板', 'base']], status: subResult(s),
+        key: subKey(s), name: s.name, chips: [s.base && ['底板', 'base']], status: subResult(s),
         body: () => nodeChanges(s),
       }))),
       preview.newGroups?.length > 0 && h('div', { class: 'list' }, preview.newGroups.map(g => item(g, {
-        name: g.name, chips: ['新增策略组'], status: groupResult(g),
+        key: groupKey(g), name: g.name, chips: ['新增策略组'], status: groupResult(g),
         body: () => g.skipped ? h('p', { class: 'hint', style: 'margin:0' }, '未生成：' + g.skipped)
           : h('div', { class: 'nodes' }, g.members.map((m, i) => h('span', { class: 'chip' + (i < g.groups ? ' base' : '') }, m))),
       }))),
       preview.warnings.length > 0 && h('div', { class: 'warnbox' }, preview.warnings.map(w => h('div', {}, w))),
       h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'hint', style: 'margin:0 auto 0 0' }, `共 ${preview.total} 个节点、${preview.groups} 个策略组、${preview.rules} 条规则`),
+        foldAll([...preview.subs.map(subKey), ...(preview.newGroups || []).map(groupKey)]),
         h('button', { class: 'sm', onclick: () => copyText(preview.yaml, '已复制配置内容') }, '复制配置内容')),
       h('pre', {}, preview.yaml),
     ];
@@ -1001,7 +1026,7 @@ async function downloadCache(s) {
   } catch (err) { toast(err.message); }
 }
 function sourcesPage() {
-  const add = kind => { const s = blankSource(kind); cfg.sources.push(s); openItems.add(s); markDirty(); render(); };
+  const add = kind => { const s = blankSource(kind); cfg.sources.push(s); setOpen(rowKey(s), true); markDirty(); render(); };
   if (srcCache?.sig !== cacheSig()) { srcCache = { caches: {}, ...srcCache, sig: cacheSig(), loading: true }; setTimeout(() => loadSourceCache().catch(() => {})); }
   return [
     h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '节点来源'), saveControls())),
@@ -1026,7 +1051,8 @@ function sourcesPage() {
         })),
       h('div', { class: 'row' },
         h('button', { onclick: () => add('remote') }, '+ 添加机场订阅'),
-        h('button', { onclick: () => add('manual') }, '+ 添加手动节点'))),
+        h('button', { onclick: () => add('manual') }, '+ 添加手动节点'),
+        h('span', { class: 'fold' }, foldAll(cfg.sources.map(rowKey))))),
   ];
 }
 

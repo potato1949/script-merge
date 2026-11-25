@@ -109,7 +109,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 - 界面上不加解释性的说明文字（用户明确要求），状态、错误、警告这类必要信息除外
 - 订阅组的 ID 由前端 `newID()` 生成，预览结果 `previews` 按它存；判断「还没保存过」看 `p.token` 是否为空
 - `field(label, obj, key, opts)`：绑定到 `obj[key]` 的控件，输入即写回并调 `markDirty()`；不属于配置的临时输入传 `local: true`
-- `item(obj, opts)`：可展开的行，展开状态按对象引用记在 `openItems`
+- `item(obj, opts)`：可展开的行。展开状态按稳定的键（`rowKey`，预览的行传 `opts.key`）记在 `openKeys`，存进 localStorage：用户要求展开后一直保持，保存、刷新、切换页面都不收起，直到手动收起。不要改回按对象引用记（保存后配置对象会整个换掉）。列表旁的「全部展开 / 全部收起」是 `foldAll(keys)`
 - **只有结构变化才调 `render()`**（增删、排序、换底板）。普通文本输入不要重绘，否则输入框会失焦
 - 子元素数组可以任意嵌套，`h()` 会完全展平
 - 服务端新增的数组 / 字符串字段要在 `normalize()` 里补默认值
