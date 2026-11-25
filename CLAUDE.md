@@ -101,12 +101,14 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 前端（`web/index.html`）
 
-原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`page`、`pi`、`tab`、`dirty`、`srcStatus`、`previews`、`accessLog`）。页面：订阅组（标签页：节点来源 / Parser / 预览 / 本组设置）、节点来源、全局设置。
+原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`saved`、`changes` / `dirty`、`page`、`pi`、`tab`、`srcStatus`、`previews`、`accessLog`）。页面：订阅组（标签页：节点来源 / Parser / 预览 / 本组设置）、节点来源、全局设置。
+
+- **未保存的修改靠对比得出**：`saved` 是最近一次从服务端拿到的配置，`markDirty()` 用 `diffConfig(cfg, saved)` 算出 `changes`，并更新渲染时用 `watch()` 登记的标记（圆点、输入框竖条、计数），不重绘。给配置加用户可改的字段时要加进 `diffConfig` 的 `*_FIELDS`；拿到服务端返回的新配置后要同时更新 `saved`
 
 - 来源的新建、修改、删除只在「节点来源」页（`sourcesPage` + `sourceFields`），免得在一个组里顺手一改、别的组跟着变。订阅组的节点来源标签页（`tabSubs`）只能选用已有来源、移除引用、设为底板、改 `SourceRef` 上的字段，来源内容只读展示；增删引用后调 `fixBase`。用户明确要求：订阅组里不放新建来源、跳转到「节点来源」页的入口，也不放底板的策略组 / 规则说明
 - 界面上不加解释性的说明文字（用户明确要求），状态、错误、警告这类必要信息除外
 - 订阅组的 ID 由前端 `newID()` 生成，预览结果 `previews` 按它存；判断「还没保存过」看 `p.token` 是否为空
-- `field(label, obj, key, opts)`：绑定到 `obj[key]` 的控件，输入即写回并标记未保存；不属于配置的临时输入传 `local: true`
+- `field(label, obj, key, opts)`：绑定到 `obj[key]` 的控件，输入即写回并调 `markDirty()`；不属于配置的临时输入传 `local: true`
 - `item(obj, opts)`：可展开的行，展开状态按对象引用记在 `openItems`
 - **只有结构变化才调 `render()`**（增删、排序、换底板）。普通文本输入不要重绘，否则输入框会失焦
 - 子元素数组可以任意嵌套，`h()` 会完全展平

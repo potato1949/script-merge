@@ -195,12 +195,13 @@ Config
 
 ## 前端结构（`web/index.html`）
 
-没有框架：`h(tag, attrs, ...kids)` 建元素（子元素数组可以任意嵌套，会被展平），`render()` 整页重绘。状态是几个模块级变量：`cfg`（整份配置）、`page`（`group` / `sources` / `settings`）、`pi`（当前订阅组下标）、`tab`、`dirty`，以及不属于配置的 `srcStatus`（来源拉取状态）、`previews`（各订阅组最近一次预览）、`accessLog`。
+没有框架：`h(tag, attrs, ...kids)` 建元素（子元素数组可以任意嵌套，会被展平），`render()` 整页重绘。状态是几个模块级变量：`cfg`（整份配置）、`page`（`group` / `sources` / `settings`）、`pi`（当前订阅组下标）、`tab`、`saved`（最近一次从服务端拿到的配置）、`changes` / `dirty`（未保存的修改），以及不属于配置的 `srcStatus`（来源拉取状态）、`previews`（各订阅组最近一次预览）、`accessLog`。
 
 - **左栏 `rail()`**：列出所有订阅组（副标题是底板名），底部是「节点来源」「全局设置」「退出登录」
 - **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页（节点来源、Parser、预览、本组设置），每个对应一个 `tabXxx(p)`
 - **节点来源标签页 `tabSubs(p)`**：底板那行带「底板」标签、启用框禁用；其他远程来源有「设为底板」。只能选用已有来源、移除引用、改 `SourceRef` 上的字段；来源内容只读（`sourceSummary`），新建、修改和删除只在「节点来源」页（`sourcesPage`），免得在一个组里顺手一改、别的组跟着变。订阅组里不放新建来源或跳转到「节点来源」页的入口。增删引用后调 `fixBase(p)`
-- **`field(label, obj, key, opts)`**：绑定到 `obj[key]` 的表单控件，输入时写回并标记「未保存」。不属于配置的临时输入传 `local: true`
+- **`field(label, obj, key, opts)`**：绑定到 `obj[key]` 的表单控件，输入时写回并调 `markDirty()`。不属于配置的临时输入传 `local: true`
+- **未保存的修改**：加载、保存成功、重置令牌后把配置存一份到 `saved`。`markDirty()` 用 `diffConfig(cfg, saved)` 逐项对比得出 `changes`（改回原值的不算），每项带位置（`page` / `pid` / `tab`）、对象和字段（`obj` / `key`）以及清单上显示的文字。引用没有 ID，按「同一来源的第 n 次引用」配对。页面上的标记（左栏、标签页、行上的圆点 `dot()`，输入框的竖条 `track()`）在渲染时用 `watch()` 登记，`markDirty()` 时逐个更新，不重绘。清单里点一项调 `jump()`：切页面和标签页、展开行、滚动并聚焦到输入框。「放弃修改」把 `cfg` 换回 `saved` 的副本，并丢掉用未保存内容生成的预览。给配置加了用户可改的字段，要加进 `diffConfig` 对应的 `*_FIELDS`，否则改了它不会被当成修改
 - **`item(obj, opts)`**：可展开的行。展开状态记在 `openItems`（WeakSet，按对象引用），重绘和排序后仍保持展开。`body(nameEl)` 只在展开时构建
 - **`dialog(title, build, actions)`**：基于原生 `<dialog>` 的对话框
 - **`newID()`**：按服务端的格式生成 ID。新建来源和订阅组时用它，这样不用先保存就能被引用、预览；令牌始终由服务端发，判断「还没保存过」看 `p.token`

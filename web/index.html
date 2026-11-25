@@ -39,6 +39,8 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var
 .rail button:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); border-color: transparent; }
 .rail button.on { background: var(--surface); color: var(--text); border-color: var(--line); }
 .gitem { display: flex; flex-direction: column; gap: 1px; }
+.rail .gitem { position: relative; padding-right: 22px; }
+.gitem .dot { position: absolute; right: 10px; top: 15px; margin: 0; }
 .gitem b { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gitem small { font-size: 12px; color: var(--muted); }
 .rail .gnew { color: var(--accent); margin-top: 4px; }
@@ -51,7 +53,15 @@ main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .ws-top { display: flex; align-items: center; gap: 10px; min-height: 44px; }
 .ws-top h2, .title-input { font: 500 28px/1.2 var(--serif); letter-spacing: .01em; margin: 0; }
 .ws-top h2 { margin-right: auto; }
-.dirty { color: var(--warn); font-size: 13px; white-space: nowrap; }
+/* 未保存的修改：保存按钮旁的修改清单入口、各处的圆点、改过的输入框左侧的竖条 */
+button.changes { border-color: transparent; background: none; color: var(--warn); font-size: 13px; padding: 4px 8px; }
+button.changes:hover:not(:disabled) { border-color: var(--warn); }
+.dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: middle; }
+input.changed, textarea.changed { box-shadow: inset 3px 0 0 var(--accent); }
+input[type=checkbox].changed { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pick.changes button { flex-direction: column; align-items: stretch; gap: 2px; }
+.pick.changes small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+[hidden] { display: none !important; }
 .tabs { display: flex; gap: 2px; margin-top: 10px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .ws-head.plain { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 9px 12px 8px; white-space: nowrap; }
@@ -193,7 +203,9 @@ yaml:
 
 // ---------- 状态 ----------
 const app = document.getElementById('app');
-let cfg = null, dirty = false, envPassword = false, busy = false;
+let cfg = null, envPassword = false, busy = false;
+let saved = null;              // 最近一次从服务端拿到的配置（加载、保存之后），和 cfg 对比得出未保存的修改
+let changes = [], dirty = false; // 未保存的修改清单（diffConfig 的结果），dirty 即清单不为空
 let build = {};                // 程序版本（服务端的 BuildInfo），登录后才有
 let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
@@ -242,11 +254,22 @@ async function api(method, path, body) {
   if (!res.ok) throw Object.assign(new Error(data.error || ('HTTP ' + res.status)), { status: res.status });
   return data;
 }
+// 配置被改动后调用：重新对比，更新页面上的修改标记（不重绘）
 function markDirty() {
-  dirty = true;
-  const d = document.getElementById('dirty'), s = document.getElementById('save');
-  if (d) d.hidden = false;
-  if (s) s.disabled = false;
+  changes = cfg && saved ? diffConfig(cfg, saved) : [];
+  dirty = changes.length > 0;
+  for (const m of marks) m();
+}
+// 修改标记：update 在渲染时和每次 markDirty 时调用。render() 开始时清空
+let marks = [];
+function watch(update) { update(); marks.push(update); }
+// 有修改时显示的圆点（左栏、标签页、行上），test(e) 判断某项修改是否属于这里
+const dot = test => { const el = h('span', { class: 'dot', title: '有未保存的修改' }); watch(() => { el.hidden = !changes.some(test); }); return el; };
+// 输入框上的修改标记。从修改清单跳过来时，记下要定位的输入框
+let jumpTo = null, jumpEl = null;
+function track(el, obj, key) {
+  watch(() => el.classList.toggle('changed', changes.some(e => e.obj === obj && e.key === key)));
+  if (jumpTo?.obj === obj && jumpTo.key === key) jumpEl = el;
 }
 window.addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
 function copyText(text, done) {
@@ -261,6 +284,7 @@ function field(label, obj, key, o = {}) {
   if (o.type === 'checkbox') {
     input = h('input', { type: 'checkbox', 'aria-label': o.aria, title: o.title, disabled: o.disabled, onchange: e => set(e.target.checked) });
     input.checked = !!obj[key];
+    if (!o.local) track(input, obj, key);
     return label ? h('label', { class: 'c' }, input, label) : input;
   }
   if (o.type === 'textarea') {
@@ -271,6 +295,7 @@ function field(label, obj, key, o = {}) {
       oninput: e => set(o.type === 'number' ? (parseInt(e.target.value, 10) || 0) : e.target.value) });
     input.value = obj[key] ?? '';
   }
+  if (!o.local) track(input, obj, key);
   if (!label) return input;
   return h('label', { class: 'f' + (o.wide ? ' wide' : '') }, label, input);
 }
@@ -295,19 +320,20 @@ function item(obj, o) {
     onkeydown: e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === head) { e.preventDefault(); head.click(); } } },
     h('span', { class: 'chev', 'aria-hidden': 'true' }),
     o.lead && h('span', { onclick: stop, onkeydown: stop, style: 'display:inline-flex' }, o.lead),
-    nameEl, (o.chips || []).filter(Boolean).map(c => Array.isArray(c) ? h('span', { class: 'chip ' + c[1] }, c[0]) : h('span', { class: 'chip' }, c)), o.status,
+    nameEl, dot(e => e.obj === obj), (o.chips || []).filter(Boolean).map(c => Array.isArray(c) ? h('span', { class: 'chip ' + c[1] }, c[0]) : h('span', { class: 'chip' }, c)), o.status,
     h('span', { class: 'item-ctl', onclick: stop, onkeydown: stop }, o.controls));
+  if (jumpTo?.obj === obj && !jumpEl) jumpEl = head; // 行内有对应的输入框时，后面构建的输入框会覆盖它
   return h('div', { class: 'item' + (open ? ' open' : '') + (o.off ? ' off' : '') }, head, open && h('div', { class: 'item-body' }, o.body(nameEl)));
 }
 
-// 对话框。build(close) 返回内容；actions: [{ label, primary, onclick(close) }]
+// 对话框。build(close) 返回内容；actions: [{ label, primary, danger, onclick(close) }]
 function dialog(title, build, actions) {
   const dlg = h('dialog', {});
   const close = () => { dlg.close(); dlg.remove(); };
   dlg.addEventListener('cancel', () => dlg.remove());
   dlg.append(h('h3', {}, title), ...[build(close)].flat(Infinity).filter(Boolean),
     h('div', { class: 'foot' }, h('button', { onclick: close }, '取消'),
-      actions.map(a => h('button', { class: a.primary ? 'primary' : '', onclick: () => a.onclick(close) }, a.label))));
+      actions.map(a => h('button', { class: a.primary ? 'primary' : a.danger ? 'danger' : '', onclick: () => a.onclick(close) }, a.label))));
   document.body.append(dlg);
   dlg.showModal();
   return dlg;
@@ -330,7 +356,7 @@ function normalize(c) {
 async function boot() {
   const st = await (await fetch('/api/status')).json();
   envPassword = st.envPassword; build = st.build || {};
-  if (st.authed) { [cfg, srcStatus] = await Promise.all([api('GET', '/api/config').then(normalize), api('GET', '/api/source-status')]); dirty = false; render(); }
+  if (st.authed) { [cfg, srcStatus] = await Promise.all([api('GET', '/api/config').then(normalize), api('GET', '/api/source-status')]); saved = clone(cfg); render(); }
   else renderAuth(!st.initialized);
 }
 function renderAuth(setup) {
@@ -347,12 +373,83 @@ function renderAuth(setup) {
 // 保存是把整份配置提交上去。cfg.revision 是加载时的版本号，服务端发现对不上（别的页面或设备先保存过）会拒绝，
 // 由用户决定要不要覆盖
 async function save() {
-  const done = c => { cfg = normalize(c); dirty = false; render(); toast('已保存修改'); return true; };
+  const done = c => { cfg = normalize(c); saved = clone(cfg); render(); toast('已保存修改'); return true; };
   try { return done(await api('PUT', '/api/config', cfg)); }
   catch (err) { if (err.status !== 409) { toast('保存失败：' + err.message); return false; } }
   if (!confirm('配置已在别的页面或设备上被修改过。\n\n「确定」：用这个页面上的内容覆盖它。\n「取消」：不保存。刷新页面可以看到最新的配置，但这里未保存的修改会丢失。')) return false;
   try { return done(await api('PUT', '/api/config?force=1', cfg)); }
   catch (err) { toast('保存失败：' + err.message); return false; }
+}
+
+// ---------- 未保存的修改 ----------
+// 逐项对比 cur 和 old（已保存的），改回原值的不算。每项修改：
+//   page / pid / tab：在哪个页面、订阅组、标签页（左栏和标签页上的圆点、从清单跳转）
+//   obj / key：改的是哪个对象的哪个字段（行上的圆点、输入框的标记）；删掉的东西没有 obj
+//   where / what / from / to：清单里显示的文字，多行文本不列新旧值
+const PROFILE_FIELDS = [['name', '名称'], ['base', '底板', { tab: 'subs' }], ['parser', 'Parser', { tab: 'parser', long: true }], ['fileName', '显示名称', { tab: 'more' }]];
+const REF_FIELDS = [['enabled', '启用'], ['prefix', '节点名前缀'], ['include', '只保留'], ['exclude', '排除'], ['dialer', '前置代理']];
+const SOURCE_FIELDS = [['name', '名称'], ['url', '订阅链接'], ['unlockUrl', '解锁地址'], ['nodes', '节点', { long: true }]];
+const GLOBAL_FIELDS = [['cacheMinutes', '缓存时间'], ['updateInterval', '建议客户端更新间隔'], ['userAgent', '拉取订阅用的 UA'], ['unlockUserAgent', '解锁 UA']];
+function diffConfig(cur, old) {
+  const out = [], label = x => `「${x?.name || '(未命名)'}」`;
+  const srcName = id => label(cur.sources.find(s => s.id === id) || old.sources.find(s => s.id === id));
+  const show = (key, v) => key === 'base' ? (v ? srcName(v) : '（无）') : typeof v === 'boolean' ? (v ? '启用' : '停用') : String(v).trim() === '' ? '（空）' : String(v);
+  const fields = (a, b, list, at) => {
+    for (const [key, what, { tab, long } = {}] of list) if (a[key] !== b[key])
+      out.push({ ...at, tab: tab || at.tab, obj: a, key, what, ...(!long && { from: show(key, b[key]), to: show(key, a[key]) }) });
+  };
+  for (const p of cur.profiles) {
+    const o = old.profiles.find(x => x.id === p.id), at = { page: 'group', pid: p.id, where: '订阅组' + label(p) };
+    if (!o) { out.push({ ...at, obj: p, what: '新建' }); continue; }
+    fields(p, o, PROFILE_FIELDS, at);
+    // 引用没有 ID：同一来源的第 n 次引用对应原来同一来源的第 n 次引用
+    const pool = {};
+    for (const x of o.sources) (pool[x.source] ||= []).push(x);
+    const pairs = p.sources.map(r => [r, pool[r.source]?.shift()]), sub = { ...at, tab: 'subs' };
+    for (const [r, x] of pairs) {
+      if (x) fields(r, x, REF_FIELDS, { ...sub, where: `${at.where} · 来源${srcName(r.source)}` });
+      else out.push({ ...sub, obj: r, what: '添加来源' + srcName(r.source) });
+    }
+    for (const x of Object.values(pool).flat()) out.push({ ...sub, what: '移除来源' + srcName(x.source) });
+    const order = pairs.filter(([, x]) => x).map(([, x]) => o.sources.indexOf(x));
+    if (order.some((v, i) => v < order[i - 1])) out.push({ ...sub, what: '调整了节点来源的顺序' });
+  }
+  for (const o of old.profiles) if (!cur.profiles.some(p => p.id === o.id)) out.push({ page: 'group', where: '订阅组' + label(o), what: '删除' });
+  for (const s of cur.sources) {
+    const o = old.sources.find(x => x.id === s.id), at = { page: 'sources', where: '节点来源' + label(s) };
+    if (o) fields(s, o, SOURCE_FIELDS, at); else out.push({ ...at, obj: s, what: '新建' });
+  }
+  for (const o of old.sources) if (!cur.sources.some(s => s.id === o.id)) out.push({ page: 'sources', where: '节点来源' + label(o), what: '删除' });
+  fields(cur, old, GLOBAL_FIELDS, { page: 'settings', where: '全局设置' });
+  return out;
+}
+// 这次保存会影响的订阅组：本组有修改的，加上用到了被修改的来源的
+function affectedProfiles() {
+  const pids = new Set(changes.map(e => e.pid)), sids = new Set(changes.filter(e => e.page === 'sources' && e.obj).map(e => e.obj.id));
+  return cfg.profiles.filter(p => pids.has(p.id) || p.sources.some(r => sids.has(r.source)));
+}
+// 跳到某项修改所在的位置：切换页面和标签页、展开对应的行，再滚动到输入框
+function jump(e) {
+  if (e.pid) { const i = cfg.profiles.findIndex(p => p.id === e.pid); if (i < 0) return; pi = i; if (e.tab) tab = e.tab; }
+  page = e.page;
+  if (e.obj && (cfg.sources.includes(e.obj) || cfg.profiles.some(p => p.sources.includes(e.obj)))) openItems.add(e.obj);
+  jumpTo = e; render();
+}
+function changesDialog() {
+  const hit = affectedProfiles();
+  dialog('未保存的修改', close => [
+    hit.length > 0 && h('p', { class: 'hint' }, '影响的订阅组：' + quote(hit)),
+    h('div', { class: 'pick changes' }, changes.map(e => h('button', { disabled: e.page === 'group' && !e.pid, onclick: () => { close(); jump(e); } },
+      h('span', {}, `${e.where} · ${e.what}`),
+      e.from != null && h('small', { title: `${e.from} → ${e.to}` }, `${e.from} → ${e.to}`)))),
+  ], [{ label: '放弃修改', danger: true, onclick: close => { if (discardChanges()) close(); } }, { label: '保存修改', primary: true, onclick: close => { close(); save(); } }]);
+}
+function discardChanges() {
+  if (!confirm(`放弃 ${changes.length} 处未保存的修改？`)) return false;
+  cfg = normalize(clone(saved));
+  for (const id in previews) if (previews[id].draft) delete previews[id]; // 用放弃掉的内容生成的预览
+  render(); toast('已放弃修改');
+  return true;
 }
 
 // ---------- 框架：左栏 + 工作区 ----------
@@ -367,11 +464,11 @@ function rail() {
     h('div', { class: 'rail-label' }, '订阅组'),
     h('div', { class: 'glist' },
       cfg.profiles.map((p, i) => h('button', { class: 'gitem' + (on('group', i) ? ' on' : ''), 'aria-current': on('group', i) ? 'page' : null, onclick: () => go('group', i) },
-        h('b', {}, p.name || '(未命名)'), h('small', {}, p.base ? `底板：${srcOf(p.base)?.name || '?'}` : '未选底板'))),
+        h('b', {}, p.name || '(未命名)'), h('small', {}, p.base ? `底板：${srcOf(p.base)?.name || '?'}` : '未选底板'), dot(e => e.pid === p.id))),
       h('button', { class: 'gnew', onclick: newGroupDialog }, '+ 新建订阅组')),
     h('div', { class: 'railnav' },
-      h('button', { class: on('sources') ? 'on' : '', onclick: () => go('sources') }, '节点来源'),
-      h('button', { class: on('settings') ? 'on' : '', onclick: () => go('settings') }, '全局设置'),
+      h('button', { class: on('sources') ? 'on' : '', onclick: () => go('sources') }, '节点来源', dot(e => e.page === 'sources')),
+      h('button', { class: on('settings') ? 'on' : '', onclick: () => go('settings') }, '全局设置', dot(e => e.page === 'settings')),
       h('button', { onclick: async () => { if (dirty && !confirm('有未保存的修改，确定退出登录？')) return; dirty = false; await api('POST', '/api/logout'); boot(); } }, '退出登录')),
     versionLine());
 }
@@ -383,14 +480,20 @@ function versionLine() {
   return h('div', { class: 'ver', title }, '版本 ' + (b.version || '开发版') + (b.modified ? '（已修改）' : ''));
 }
 function saveControls() {
-  const d = h('span', { id: 'dirty', class: 'dirty' }, '有未保存的修改');
-  d.hidden = !dirty;
-  return [d, h('button', { id: 'save', class: 'primary', disabled: !dirty, onclick: save }, '保存修改')];
+  const list = h('button', { class: 'changes', onclick: changesDialog });
+  const discard = h('button', { onclick: discardChanges }, '放弃修改');
+  const btn = h('button', { class: 'primary', onclick: save }, '保存修改');
+  watch(() => { list.textContent = `${changes.length} 处未保存的修改`; list.hidden = discard.hidden = !dirty; btn.disabled = !dirty; });
+  return [list, discard, btn];
 }
 function render() {
   if (page === 'group' && !cur()) page = 'sources'; // 没有订阅组时没有可显示的工作区
+  marks = []; jumpEl = null; markDirty();
   const body = page === 'group' ? groupPage() : page === 'sources' ? sourcesPage() : settingsPage();
   app.replaceChildren(h('div', { class: 'shell' }, rail(), h('main', {}, body)));
+  if (!jumpTo) return;
+  if (jumpEl) { jumpEl.scrollIntoView({ block: 'center' }); jumpEl.focus({ preventScroll: true }); } else window.scrollTo(0, 0);
+  jumpTo = null;
 }
 
 // ---------- 订阅组工作区 ----------
@@ -401,6 +504,7 @@ function groupPage() {
   const views = { subs: tabSubs, parser: tabParser, preview: tabPreview, more: tabMore };
   const title = h('input', { class: 'title-input', type: 'text', value: p.name, 'aria-label': '订阅组名称', spellcheck: 'false', placeholder: '订阅组名称',
     oninput: e => { p.name = e.target.value; markDirty(); document.querySelector('.gitem.on b').textContent = p.name || '(未命名)'; } });
+  track(title, p, 'name');
   return [
     h('div', { class: 'ws-head' },
       h('div', { class: 'ws-top' }, title,
@@ -408,7 +512,7 @@ function groupPage() {
         saveControls()),
       h('div', { class: 'tabs', role: 'tablist' }, GROUP_TABS.map(([id, name, count]) =>
         h('button', { class: tab === id ? 'on' : '', role: 'tab', 'aria-selected': String(tab === id), onclick: () => { tab = id; render(); } },
-          name, count && h('span', { class: 'n' }, count(p)))))),
+          name, count && h('span', { class: 'n' }, count(p)), dot(e => e.pid === p.id && e.tab === id))))),
     h('div', { class: 'content' }, views[tab](p)),
   ];
 }
@@ -646,7 +750,7 @@ function tabMore(p) {
       p.token ? [
         h('div', { class: 'row' }, h('input', { type: 'text', readonly: true, value: subLink(p), style: 'flex:1 1 300px', onfocus: e => e.target.select() }),
           h('button', { onclick: () => copyText(subLink(p), '已复制订阅链接') }, '复制'),
-          h('button', { class: 'danger', onclick: async () => { if (!confirm('重置后旧链接立即失效，确定？')) return; if (dirty && !(await save())) return; cfg = normalize(await api('POST', '/api/token', { profile: cur().id })); render(); toast('已重置链接'); } }, '重置链接')),
+          h('button', { class: 'danger', onclick: async () => { if (!confirm('重置后旧链接立即失效，确定？')) return; if (dirty && !(await save())) return; cfg = normalize(await api('POST', '/api/token', { profile: cur().id })); saved = clone(cfg); render(); toast('已重置链接'); } }, '重置链接')),
       ] : h('p', { class: 'hint', style: 'margin:0' }, '保存修改后生成这个订阅组的订阅链接。')),
     accessCard(p),
     h('div', { class: 'card' }, h('h3', {}, '显示名称'),
