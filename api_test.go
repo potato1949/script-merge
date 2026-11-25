@@ -176,13 +176,14 @@ func TestPreviewUnsavedAndSourceStatus(t *testing.T) {
 	draft := a.store.Config()
 	const id = "bbbbbbbbbbbbbbbb"
 	draft.Sources = []Source{{ID: id, Name: "机场", URL: up.URL}}
-	draft.Profiles = append(draft.Profiles, Profile{Name: "还没保存的组", Base: id, Sources: []SourceRef{{Source: id, Enabled: true, Exclude: "b"}},
+	draft.Profiles = append(draft.Profiles, Profile{Name: "还没保存的组", Base: id, Sources: []SourceRef{{Source: id, Enabled: true, Exclude: "b", Dialer: "选择"}},
 		Groups: []ProxyGroup{{Name: "新增", Groups: []string{"选择"}, Filter: "."}}})
 	type previewRes struct {
 		YAML      string
 		Total     int
 		Subs      []SubStatus
 		NewGroups []GroupStatus
+		Loops     []DialerLoop
 	}
 	preview := func(refresh bool) previewRes {
 		t.Helper()
@@ -198,6 +199,10 @@ func TestPreviewUnsavedAndSourceStatus(t *testing.T) {
 	}
 	if len(res.NewGroups) != 1 || !reflect.DeepEqual(res.NewGroups[0].Members, []string{"选择", "a"}) {
 		t.Errorf("预览应带上新增策略组的结果: %+v", res.NewGroups)
+	}
+	// 节点 a 的前置是「选择」，而「选择」里有 a：预览要带上成环的节点和前置代理
+	if len(res.Loops) != 1 || res.Loops[0].Node != "a" || res.Subs[0].Dialer != "选择" {
+		t.Errorf("预览应带上前置代理和成环的节点: %+v %+v", res.Loops, res.Subs)
 	}
 	after := a.store.Config()
 	if len(after.Profiles) != len(before.Profiles) || len(after.Sources) != len(before.Sources) || after.Revision != before.Revision {

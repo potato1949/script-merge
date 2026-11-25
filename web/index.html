@@ -127,6 +127,7 @@ input.changed, textarea.changed, .checks.changed, .seg.changed { box-shadow: ins
 .chip, .tag { flex: none; font-size: 12px; line-height: 18px; padding: 1px 8px; border-radius: 6px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
 .chip.base { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .chip.drop { text-decoration: line-through; }
+.chip.err { background: var(--danger-soft); color: var(--danger); }
 .tag { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .tag::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
 .tag.ok { color: var(--ok); }
@@ -139,6 +140,8 @@ label.c { display: inline-flex; align-items: center; gap: 7px; color: var(--text
 .ua-field { display: flex; flex-direction: column; gap: 6px; }
 .ua-field > .lbl { font-size: 13px; color: var(--muted); }
 .ua-field > .lbl + * + * { margin-top: 2px; }
+.row.dial { flex-wrap: nowrap; }
+.row.dial > input { flex: 1 1 0; min-width: 0; }
 input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 input[type=text], input[type=password], input[type=number], select, textarea {
   width: 100%; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 8px;
@@ -470,7 +473,7 @@ function normalize(c) {
   for (const p of c.profiles) {
     p.id ||= newID(); p.base ||= ''; p.parser ||= ''; p.fileName ||= '';
     p.sources = (p.sources || []).filter(r => ids.has(r.source));
-    for (const r of p.sources) for (const k of ['prefix', 'include', 'exclude', 'dialer']) r[k] ||= '';
+    for (const r of p.sources) { for (const k of ['prefix', 'include', 'exclude', 'dialer', 'dialerFilter']) r[k] ||= ''; r.dialerAuto = !!r.dialerAuto; }
     p.groups ||= [];
     for (const g of p.groups) { g.id ||= newID(); g.name ||= ''; g.groups ||= []; g.filter ||= ''; g.icon ||= ''; }
   }
@@ -515,13 +518,13 @@ async function save() {
 //   where / what / from / to：清单里显示的文字，多行文本不列新旧值
 const PROFILE_FIELDS = [['name', '名称'], ['base', '底板', { tab: 'subs' }], ['parser', 'Parser', { tab: 'parser', long: true }], ['fileName', '显示名称', { tab: 'more' }]];
 const GROUP_FIELDS = [['name', '名称'], ['filter', '节点正则'], ['icon', '图标链接']];
-const REF_FIELDS = [['enabled', '启用'], ['prefix', '节点名前缀'], ['include', '只保留'], ['exclude', '排除'], ['dialer', '前置代理']];
+const REF_FIELDS = [['enabled', '启用'], ['prefix', '节点名前缀'], ['include', '只保留'], ['exclude', '排除'], ['dialerAuto', '前置代理方式'], ['dialer', '前置代理'], ['dialerFilter', '前置组的节点正则']];
 const SOURCE_FIELDS = [['name', '名称'], ['url', '订阅链接'], ['unlockUrl', '解锁地址'], ['nodes', '节点', { long: true }]];
 const GLOBAL_FIELDS = [['cacheMinutes', '缓存时间'], ['updateInterval', '建议客户端更新间隔'], ['userAgent', '拉取订阅用的 UA'], ['followUA', '拉取 UA 的方式'], ['unlockUserAgent', '解锁 UA']];
 function diffConfig(cur, old) {
   const out = [], label = x => `「${x?.name || '(未命名)'}」`;
   const srcName = id => label(cur.sources.find(s => s.id === id) || old.sources.find(s => s.id === id));
-  const show = (key, v) => key === 'followUA' ? (v ? '跟随 Clash Verge Rev 最新版' : '自定义') : key === 'base' ? (v ? srcName(v) : '（无）') : typeof v === 'boolean' ? (v ? '启用' : '停用') : String(v).trim() === '' ? '（空）' : String(v);
+  const show = (key, v) => key === 'followUA' ? (v ? '跟随 Clash Verge Rev 最新版' : '自定义') : key === 'dialerAuto' ? (v ? '自动生成' : '指定') : key === 'base' ? (v ? srcName(v) : '（无）') : typeof v === 'boolean' ? (v ? '启用' : '停用') : String(v).trim() === '' ? '（空）' : String(v);
   const fields = (a, b, list, at) => {
     for (const [key, what, { tab, long } = {}] of list) if (a[key] !== b[key])
       out.push({ ...at, tab: tab || at.tab, obj: a, key, what, ...(!long && { from: show(key, b[key]), to: show(key, a[key]) }) });
@@ -687,7 +690,7 @@ function sourceFields(s, onName) {
 }
 const sourceChips = s => s.kind === 'manual' ? ['手动节点'] : [s.unlockUrl.trim() && '需解锁'];
 const blankSource = kind => ({ id: newID(), kind, name: kind === 'manual' ? '手动节点' : '机场 ' + (cfg.sources.filter(x => x.kind !== 'manual').length + 1), nodes: '', url: '', unlockUrl: '' });
-const blankRef = s => ({ source: s.id, enabled: true, prefix: '', include: '', exclude: '', dialer: '' });
+const blankRef = s => ({ source: s.id, enabled: true, prefix: '', include: '', exclude: '', dialer: '', dialerAuto: false, dialerFilter: '' });
 
 // ---------- 来源的拉取状态 ----------
 // srcStatus 里是服务端记下的、各来源最近一次实际请求上游的结果，不用打开预览也能看到上游是否正常
@@ -722,7 +725,7 @@ function tabSubs(p) {
   const use = s => { const r = blankRef(s); p.sources.push(r); fixBase(p); setOpen(rowKey(r), true); markDirty(); render(); };
   const addBtn = h('button', { disabled: cfg.sources.length === 0, title: cfg.sources.length === 0 ? '还没有节点来源' : null, onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源');
   return [
-    datalist(dialerList, srcStatus[p.base]?.groups || []),
+    datalist(dialerList, dialerCandidates(p)),
     listWithActions(p.sources.length > 0 && h('div', { class: 'list' }, p.sources.map((r, i) => {
         const s = srcOf(r.source), others = usersOf(s.id).filter(x => x !== p), isBase = i === bi;
         const st = status.find(x => x.index === i && x.id === s.id);
@@ -730,7 +733,7 @@ function tabSubs(p) {
           name: s.name, off: !r.enabled && !isBase,
           lead: isBase ? field('', { on: true }, 'on', { type: 'checkbox', disabled: true, local: true, aria: '底板始终使用', title: '底板始终使用' })
             : field('', r, 'enabled', { type: 'checkbox', aria: '启用', onchange: render }),
-          chips: [isBase && ['底板', 'base'], ...sourceChips(s), r.dialer && `经由 ${r.dialer}`, others.length > 0 && `${others.length + 1} 个订阅组共用`],
+          chips: [isBase && ['底板', 'base'], ...sourceChips(s), dialerName(r) && `经由 ${dialerName(r)}`, others.length > 0 && `${others.length + 1} 个订阅组共用`],
           // 生成过预览就显示本组的结果（过滤后用了几个），否则显示来源最近一次拉取上游的结果
           status: !st ? stateTag(s) : (st.error ? h('span', { class: 'tag err', title: st.error }, (st.stale ? `失败，用缓存 ${st.used} 个：` : '失败：') + st.error)
             : h('span', { class: 'tag ok' }, `${st.used} / ${st.count} 个节点`)),
@@ -742,13 +745,39 @@ function tabSubs(p) {
             h('div', { class: 'sublabel' }, sourceSummary(s)),
             h('div', { class: 'grid' },
               field('节点名前缀（可选）', r, 'prefix', { placeholder: '例：[机场A] ' }),
-              field('前置代理（可选）', r, 'dialer', { placeholder: '底板的策略组名或节点名', list: dialerList }),
+              dialerField(r, dialerList),
               field('只保留匹配的节点（正则，可选）', r, 'include', { placeholder: '例：香港|日本' }),
               field('排除匹配的节点（正则，可选）', r, 'exclude', { placeholder: '例：过期|剩余|官网' })),
           ],
         });
       })), '还没有节点来源', addBtn, p.sources.map(rowKey)),
   ];
+}
+// 引用上的前置代理：自动生成的组名是「<来源名> 前置」（和服务端 addAutoDialers 一致；重名时服务端会加序号，预览里能看到实际的名字）
+const dialerName = r => r.dialerAuto ? `${srcOf(r.source)?.name || ''} 前置` : r.dialer.trim();
+// 「指定」前置代理时的候选：底板的策略组、本组新增的策略组、自动生成的前置组，以及最近一次预览里的全部节点
+function dialerCandidates(p) {
+  const pv = previews[p.id];
+  return [...new Set([
+    ...(srcStatus[p.base]?.groups || []),
+    ...p.groups.map(g => g.name.trim()),
+    ...p.sources.filter(r => r.dialerAuto && (r.enabled || r.source === p.base)).map(dialerName),
+    ...(pv?.subs || []).flatMap(s => (s.nodes || []).map(n => n.out)),
+  ].filter(Boolean))];
+}
+// 前置代理：「指定」一个策略组或节点，或「自动生成」一个前置组（成员是加了前缀的节点名匹配正则的节点，带前置代理的除外）。
+// 两种方式二选一，只显示所选方式的输入框；隐藏的那个的修改标在按钮组上，从修改清单点它也跳到这里
+function dialerField(r, list) {
+  const pick = auto => { if (r.dialerAuto === auto) return; r.dialerAuto = auto; markDirty(); render(); };
+  const seg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': '前置代理方式' },
+    [[false, '指定'], [true, '自动生成']].map(([v, text]) =>
+      h('button', { class: r.dialerAuto === v ? 'on' : '', role: 'radio', 'aria-checked': String(r.dialerAuto === v), onclick: () => pick(v) }, text)));
+  const keys = r.dialerAuto ? ['dialerAuto', 'dialer'] : ['dialerAuto', 'dialerFilter'];
+  watch(() => seg.classList.toggle('changed', changes.some(e => e.obj === r && keys.includes(e.key))));
+  if (jumpTo?.obj === r && keys.includes(jumpTo.key)) jumpEl = seg.querySelector('.on');
+  const input = r.dialerAuto ? field(null, r, 'dialerFilter', { placeholder: '节点正则，留空为全部，例：香港|日本' })
+    : field(null, r, 'dialer', { placeholder: '策略组名或节点名', list });
+  return h('div', { class: 'ua-field' }, h('span', { class: 'lbl' }, '前置代理（可选）'), h('div', { class: 'row dial' }, seg, input));
 }
 // 来源内容的只读概述（订阅组里展示用）
 function sourceSummary(s) {
@@ -907,16 +936,28 @@ function subResult(s) {
   if (s.error) return h('span', { class: 'tag err', title: s.error }, (s.stale ? `失败，用缓存 ${s.used} 个：` : '失败：') + s.error);
   return h('span', { class: 'tag ok' }, `保留 ${s.used} / ${s.count} 个节点` + (s.hosts ? `，hosts ${s.hosts} 条` : ''));
 }
-// 经过「只保留 / 排除」之后，来源里的节点哪些留下（显示输出里的名字，悬停看原名）、哪些被过滤掉
-function nodeChanges(s) {
+// 经过「只保留 / 排除」之后，来源里的节点哪些留下（显示输出里的名字，悬停看原名）、哪些被过滤掉。
+// 有前置代理时先列出经由哪里（自动生成的前置组列出成员）；前置代理会绕回自己的节点标红，悬停看成环的路径
+function nodeChanges(s, loops) {
   const nodes = s.nodes || [], kept = nodes.filter(n => n.out), dropped = nodes.filter(n => !n.out);
-  if (nodes.length === 0) return h('p', { class: 'hint' }, '没有节点');
+  const keptChip = n => {
+    const l = loops.find(x => x.node === n.out);
+    const title = [n.out !== n.name && '原名：' + n.name, l && '前置代理成环：' + l.path.join(' → ')].filter(Boolean).join('\n');
+    return h('span', { class: 'chip' + (l ? ' err' : ''), title: title || null }, n.out);
+  };
   return [
-    h('div', { class: 'sublabel' }, `保留 ${kept.length} 个`),
-    h('div', { class: 'nodes' }, kept.map(n => h('span', { class: 'chip', title: n.out !== n.name ? '原名：' + n.name : null }, n.out))),
-    dropped.length > 0 && [
-      h('div', { class: 'sublabel' }, `过滤掉 ${dropped.length} 个`),
-      h('div', { class: 'nodes' }, dropped.map(n => h('span', { class: 'chip drop' }, n.name))),
+    s.dialer && [
+      h('div', { class: 'sublabel' }, s.dialerMembers
+        ? `经由自动生成的前置组「${s.dialer}」，${s.dialerMembers.filter(m => m !== 'REJECT').length} 个节点` : `经由「${s.dialer}」`),
+      s.dialerMembers && h('div', { class: 'nodes' }, s.dialerMembers.map(m => h('span', { class: 'chip' + (m === 'REJECT' ? ' err' : '') }, m))),
+    ],
+    nodes.length === 0 ? h('p', { class: 'hint' }, '没有节点') : [
+      h('div', { class: 'sublabel' }, `保留 ${kept.length} 个`),
+      h('div', { class: 'nodes' }, kept.map(keptChip)),
+      dropped.length > 0 && [
+        h('div', { class: 'sublabel' }, `过滤掉 ${dropped.length} 个`),
+        h('div', { class: 'nodes' }, dropped.map(n => h('span', { class: 'chip drop' }, n.name))),
+      ],
     ],
   ];
 }
@@ -933,10 +974,14 @@ function tabPreview(p) {
       missing.length > 0 && h('div', { class: 'warnbox row' }, h('span', { class: 'grow' }, `${quote(missing)}还没有缓存，未并入`), fetchBtn('拉取')),
       preview.draft && dirty && h('div', { class: 'warnbox' }, '包含未保存的修改'),
       preview.warnings.length > 0 && h('div', { class: 'warnbox' }, preview.warnings.map(w => h('div', {}, w))),
-      preview.subs.length > 0 && h('div', { class: 'list' }, preview.subs.map(s => item(s, {
-        key: subKey(s), name: s.name, chips: [s.base && ['底板', 'base']], status: subResult(s),
-        body: () => nodeChanges(s),
-      }))),
+      preview.subs.length > 0 && h('div', { class: 'list' }, preview.subs.map(s => {
+        const loops = (preview.loops || []).filter(l => (s.nodes || []).some(n => n.out === l.node));
+        return item(s, {
+          key: subKey(s), name: s.name, status: subResult(s),
+          chips: [s.base && ['底板', 'base'], s.dialer && `经由 ${s.dialer}`, loops.length > 0 && [`${loops.length} 个节点前置成环`, 'err']],
+          body: () => nodeChanges(s, loops),
+        });
+      })),
       preview.newGroups?.length > 0 && h('div', { class: 'list' }, preview.newGroups.map(g => item(g, {
         key: groupKey(g), name: g.name, chips: ['新增策略组'], status: groupResult(g),
         body: () => g.skipped ? h('p', { class: 'hint' }, '未生成：' + g.skipped)

@@ -43,6 +43,10 @@ type SourceRef struct {
 	Exclude string `json:"exclude"` // 节点名排除正则
 	// Dialer 是前置代理（代理链）：非空时本引用的节点都写上 dialer-proxy，经由这个策略组或节点拨号
 	Dialer string `json:"dialer"`
+	// DialerAuto 为真时不用 Dialer，改为自动生成一个「<来源名> 前置」的 select 组作为本引用节点的前置代理：
+	// 成员是输出名匹配 DialerFilter 的节点（所有来源的，空则全部），带前置代理的节点一律剔除，所以不会成环（见 dialer.go）
+	DialerAuto   bool   `json:"dialerAuto"`
+	DialerFilter string `json:"dialerFilter"`
 }
 
 // Profile 是一个订阅组：以一个机场的完整配置为底板，并入其他来源的节点，对应一个输出链接。

@@ -91,17 +91,21 @@ const (
 
 // SubStatus 描述一次构建中某个来源的状态。
 type SubStatus struct {
-	Index   int          `json:"index"` // 在订阅组的来源列表里的下标
-	ID      string       `json:"id"`    // 来源 ID
-	Name    string       `json:"name"`
-	Base    bool         `json:"base"`  // 是不是底板机场
-	Count   int          `json:"count"` // 拉取到的节点数（过滤前）
-	Used    int          `json:"used"`  // 过滤后实际使用的节点数
-	Nodes   []NodeChange `json:"nodes"` // 来源里的每个节点在本组里的去向，按上游顺序
-	Error   string       `json:"error,omitempty"`
-	Stale   bool         `json:"stale"`             // 拉取失败，使用了旧缓存
-	Hosts   int          `json:"hosts,omitempty"`   // 带过来的上游 hosts 条数（非底板来源的节点地址经 hosts 映射时才有）
-	NoCache bool         `json:"noCache,omitempty"` // 只用缓存时，这个来源还没有可用的缓存
+	Index int          `json:"index"` // 在订阅组的来源列表里的下标
+	ID    string       `json:"id"`    // 来源 ID
+	Name  string       `json:"name"`
+	Base  bool         `json:"base"`  // 是不是底板机场
+	Count int          `json:"count"` // 拉取到的节点数（过滤前）
+	Used  int          `json:"used"`  // 过滤后实际使用的节点数
+	Nodes []NodeChange `json:"nodes"` // 来源里的每个节点在本组里的去向，按上游顺序
+	Error string       `json:"error,omitempty"`
+	Stale bool         `json:"stale"`           // 拉取失败，使用了旧缓存
+	Hosts int          `json:"hosts,omitempty"` // 带过来的上游 hosts 条数（非底板来源的节点地址经 hosts 映射时才有）
+	// Dialer 是这条引用的节点写上的前置代理（填的名字或自动生成的前置组名），空则没有统一设置
+	Dialer string `json:"dialer,omitempty"`
+	// DialerMembers 是自动生成的前置组的成员，填名字的没有
+	DialerMembers []string `json:"dialerMembers,omitempty"`
+	NoCache       bool     `json:"noCache,omitempty"` // 只用缓存时，这个来源还没有可用的缓存
 }
 
 // NodeChange 是来源里的一个节点经过「只保留 / 排除」之后的去向：

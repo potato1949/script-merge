@@ -51,7 +51,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 `Config` 下有 `Profiles[]`（各自带 `Base`、`Parser`、对节点来源的引用 `Sources []SourceRef` 和新增的策略组 `Groups []ProxyGroup`）、全局的节点来源 `Sources[]`，以及全局的 `CacheMinutes` / `UpdateInterval` / `UserAgent`（拉取 UA）/ `FollowUA`（拉取 UA 跟随 Clash Verge Rev 版本）/ `UnlockUserAgent`（解锁 UA）。
 
-- **节点来源是全局对象，订阅组只存引用**：`Source` 放属于来源本身的内容（名称、`Kind`、链接、解锁地址、手填节点），`SourceRef` 放「这个订阅组怎么用它」（启用、前缀、Include / Exclude、前置代理 `Dialer`）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次。给来源加字段时先想清楚它属于哪一边
+- **节点来源是全局对象，订阅组只存引用**：`Source` 放属于来源本身的内容（名称、`Kind`、链接、解锁地址、手填节点），`SourceRef` 放「这个订阅组怎么用它」（启用、前缀、Include / Exclude、前置代理 `Dialer` / `DialerAuto` / `DialerFilter`）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次。给来源加字段时先想清楚它属于哪一边
 - `Source.Kind`：`remote`（远程订阅）或 `manual`（手填节点）；空值等同 `remote`
 - **底板**：`Profile.Base` 必须是本组引用的远程来源；同一来源被引用多次时第一条是底板，底板不看启用开关。`validateConfig`（服务端）和 `fixBase`（前端）按同一规则修正：不合法就改用本组第一个远程来源，没有则为空
 - **不做迁移**：`Config.Version`（当前 `configVersion = 8`）对不上时 `OpenStore` 把原文件存为 `config.json.bak`、换成默认配置、保留管理密码。加字段不用改版本（零值必须是合理的默认行为）；改结构才加版本，旧配置会整个作废
@@ -60,11 +60,13 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 `GET /sub/{token}` 和 `POST /api/preview` 调同一个 `Build(cfg, profile, fetcher, mode)`（`FetchMode`：正常 / 跳过缓存 / 只用已有缓存）：
 
-本组用到的来源（底板排第一）并发拉取 → 底板拿不到或没有策略组就报错 → `root` = 底板配置去掉 proxies 的深拷贝 → 汇总节点（底板的在前；过滤 / 加前缀 / 重名加序号 / 写 dialer-proxy；非底板来源带上节点地址用到的 hosts）→ `baseGroups` 改写底板的策略组 → `addGroups` 追加本组新增的策略组 → `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
+本组用到的来源（底板排第一）并发拉取 → 底板拿不到或没有策略组就报错 → `root` = 底板配置去掉 proxies 的深拷贝 → 汇总节点（底板的在前；过滤 / 加前缀 / 重名加序号 / 写 dialer-proxy；非底板来源带上节点地址用到的 hosts）→ `baseGroups` 改写底板的策略组 → `addGroups` 追加本组新增的策略组 → `addAutoDialers` 追加自动生成的前置组 → `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
 
 - **预览不保存**：`POST /api/preview` 的请求体带着前端当前的整份 `cfg`（可能还没保存）和订阅组下标，服务端先过 `validateConfig` 再 `Build`，不落盘。「先预览、满意再保存」是界面的基本流程，不要让预览依赖已保存的配置
 - **底板原样保留**：规则、`rule-providers`、`proxy-providers`、DNS、hosts 都不动。`baseGroups`（`upstream.go`）只把成员里的底板节点名换成输出名、去掉被过滤的；包含底板全部节点的组追加其他来源的节点；`use` / `include-all` / `filter` 原样保留
-- 代理链只有一种做法：`SourceRef.Dialer` 给这条引用的节点写上 `dialer-proxy`。前置代理里含有这些节点本身会成环，`validateDialers` 只警告，不自动排除（这是用户确认的取舍）
+- 代理链（`dialer.go`）只有 `dialer-proxy` 一种输出，两种方式：「指定」（`SourceRef.Dialer`，填名字）；「自动生成」（`DialerAuto`）追加一个「`<来源名> 前置`」select 组，成员是所有来源里输出名匹配 `DialerFilter` 的节点，**带前置代理的节点一律剔除**，结构上不成环。指定的组里含有这些节点本身会成环，`validateDialers` 只警告，不从底板的组里自动排除（用户确认的取舍）
+- **流量走向要严谨**（用户明确要求）：前置组没有成员时填 `REJECT`，绝不能填 `DIRECT`（落地节点会被悄悄直连）；正则写错时不猜。成环检查宁可多报不能漏报：`groupMembers` 按 mihomo 的规则展开 `include-all` / `filter` / `exclude-filter`，拿不准的按「可能选到」算
+- Parser 加的节点不经过前面的流程（不并进组、不匹配任何正则、不写前置），用不到时 `unusedNodes` 提示改用手动节点来源
 - 上游内容只认 Clash YAML 或分享链接列表；输出始终是 Clash YAML。其他客户端格式的方向见 `docs/CLIENT-SUPPORT.md`（加输出侧的渲染器，不加输入解析器）
 - 内存里的配置树统一用 `map[string]any` / `[]any`，不要放 `[]map[string]any` 或 `[]string`：Parser 的路径命令和 `toNode` 只认前者
 - **节点地址的 hosts**（`upstream.go` 的 `nodeHosts`）：非底板来源的节点 server 经 hosts 映射（可能多层）时，找出要用的上游 hosts 和 fake-ip-filter 条目合并进输出；底板自己的已经整份在输出里

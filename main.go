@@ -494,7 +494,7 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"yaml": string(res.YAML), "subs": res.Subs, "warnings": res.Warnings,
 		"total": res.Total, "groups": res.Groups, "rules": res.Rules, "userinfo": res.Userinfo, "newGroups": res.NewGroups,
-		"cached": mode == FetchCacheOnly,
+		"loops": res.Loops, "cached": mode == FetchCacheOnly,
 	})
 }
 

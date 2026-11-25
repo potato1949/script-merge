@@ -23,8 +23,10 @@ type BuildResult struct {
 	Groups   int         `json:"groups"`
 	// NewGroups 是订阅组追加的策略组各自的结果，顺序同 Profile.Groups
 	NewGroups []GroupStatus `json:"newGroups"`
-	Rules     int           `json:"rules"`
-	Userinfo  string        `json:"userinfo"`
+	// Loops 是前置代理会绕回自己的节点（见 validateDialers）
+	Loops    []DialerLoop `json:"loops"`
+	Rules    int          `json:"rules"`
+	Userinfo string       `json:"userinfo"`
 }
 
 func deepCopy(v any) any {
@@ -81,7 +83,7 @@ var errNoCache = errors.New("底板机场还没有缓存")
 // → 底板的策略组换上新的节点名，包含底板全部节点的组再加上其他来源的节点 → 带上其他来源节点地址要用的 hosts
 // → 追加本组新增的策略组 → Parser → 校验 → 输出 YAML。底板的规则、rule-providers、DNS 等其余内容原样保留。
 func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, error) {
-	res := &BuildResult{Warnings: []string{}}
+	res := &BuildResult{Warnings: []string{}, Loops: []DialerLoop{}}
 	warn := func(format string, a ...any) { res.Warnings = append(res.Warnings, fmt.Sprintf(format, a...)) }
 
 	// 1. 本组用到的来源，底板排第一个。来源是全局对象，订阅组里只有引用；
@@ -188,7 +190,14 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 	infoFrom := map[string]bool{}   // 同一个来源被引用多次时，流量信息只算一次
 	rename := map[string][]string{} // 底板：上游节点名 → 输出里的名字（被过滤掉的没有）
 	var others []string             // 其他来源的节点在输出里的名字
+	var autos []autoDialer          // 选了自动生成前置组的引用，策略组都就位后再生成（见 dialer.go）
 	for i, s := range subs {
+		dialer := strings.TrimSpace(s.Dialer)
+		if s.DialerAuto {
+			dialer = "" // 先不写，生成前置组之后统一写上
+			autos = append(autos, autoDialer{sub: i, source: s.Name, filter: s.DialerFilter})
+		}
+		res.Subs[i].Dialer = dialer
 		e := entries[i]
 		if e == nil {
 			continue
@@ -213,8 +222,12 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 				res.Subs[i].Nodes = append(res.Subs[i].Nodes, NodeChange{Name: name})
 				continue
 			}
-			out := add(p, s.Prefix, strings.TrimSpace(s.Dialer))
+			out := add(p, s.Prefix, dialer)
 			res.Subs[i].Nodes = append(res.Subs[i].Nodes, NodeChange{Name: name, Out: out})
+			if s.DialerAuto {
+				a := &autos[len(autos)-1]
+				a.nodes = append(a.nodes, proxies[len(proxies)-1].(map[string]any))
+			}
 			if i == 0 {
 				rename[name] = append(rename[name], out)
 			} else {
@@ -247,6 +260,17 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 	}) {
 		warn("底板里没有包含它全部节点的策略组，其他来源的节点没有加进任何策略组。可以用 Parser 把它们加到需要的策略组里")
 	}
+	// 自动生成的前置组排在最后：成员要从全部节点里挑，并且要知道哪些节点已经带了前置代理
+	groups, names, members, ws := addAutoDialers(autos, proxies, groups)
+	res.Warnings = append(res.Warnings, ws...)
+	for k, a := range autos {
+		res.Subs[a.sub].Dialer, res.Subs[a.sub].DialerMembers = names[k], members[k]
+	}
+	root["proxy-groups"] = groups
+	before := map[string]bool{} // Parser 之前的节点，用来找出 Parser 加的节点
+	for _, n := range namesOf(proxies) {
+		before[n] = true
+	}
 
 	// 5. CFW Parser
 	pw, err := ApplyParser(root, p.Parser)
@@ -254,7 +278,17 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 		return nil, err
 	}
 	res.Warnings = append(res.Warnings, pw...)
-	res.Warnings = append(res.Warnings, validate(root)...)
+	vw, loops := validate(root)
+	res.Warnings = append(res.Warnings, vw...)
+	res.Loops = loops
+	if extra := unusedNodes(root, before); len(extra) > 0 {
+		more := ""
+		if len(extra) > 3 {
+			more = fmt.Sprintf(" 等 %d 个", len(extra))
+			extra = extra[:3]
+		}
+		warn("Parser 加的节点「%s」%s不在任何策略组里，客户端里用不到。要加节点建议用手动节点来源，它会和其他节点一样并进策略组", strings.Join(extra, "」「"), more)
+	}
 	res.Total = len(namesOf(root["proxies"]))
 	res.Groups = len(namesOf(root["proxy-groups"]))
 	rules, _ := root["rules"].([]any)
@@ -292,8 +326,54 @@ func unescapeRunes(b []byte) []byte {
 
 var builtinPolicies = map[string]bool{"DIRECT": true, "REJECT": true, "REJECT-DROP": true, "PASS": true, "COMPATIBLE": true, "GLOBAL": true}
 
+// rulePolicy 取出一条规则指向的策略。逻辑规则（AND / OR / NOT）、子规则不解析，返回 false。
+func rulePolicy(rule string) (string, bool) {
+	parts := strings.Split(rule, ",")
+	switch {
+	case parts[0] == "MATCH" && len(parts) >= 2:
+		return strings.TrimSpace(parts[1]), true
+	case strings.ContainsAny(parts[0], "()") || parts[0] == "AND" || parts[0] == "OR" || parts[0] == "NOT" || parts[0] == "SUB-RULE":
+		return "", false
+	case len(parts) >= 3:
+		return strings.TrimSpace(parts[2]), true
+	}
+	return "", false
+}
+
+// unusedNodes 找出 Parser 加进来（或改了名）的、哪里都用不到的节点：不在任何策略组里（含 include-all 选入的），
+// 不是哪个节点的前置代理，也没有规则直接指向它。before 是 Parser 之前输出里的节点名。
+// 逻辑规则里的引用解析不出来，可能多报，只是提示。
+func unusedNodes(root map[string]any, before map[string]bool) []string {
+	used := map[string]bool{}
+	members, _ := groupMembers(root)
+	for _, ms := range members {
+		for _, m := range ms {
+			used[m] = true
+		}
+	}
+	proxies, _ := root["proxies"].([]any)
+	for _, p := range proxies {
+		if pm, _ := p.(map[string]any); pm != nil && hasDialer(pm) {
+			used[fmt.Sprint(pm["dialer-proxy"])] = true
+		}
+	}
+	rules, _ := root["rules"].([]any)
+	for _, r := range rules {
+		if policy, ok := rulePolicy(fmt.Sprint(r)); ok {
+			used[policy] = true
+		}
+	}
+	var out []string
+	for _, n := range namesOf(proxies) {
+		if !before[n] && !used[n] {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
 // validate 检查策略组成员、规则引用的策略、节点的前置代理（dialer-proxy）是否存在，以及前置代理有没有绕回节点自己。
-func validate(root map[string]any) (warns []string) {
+func validate(root map[string]any) (warns []string, loops []DialerLoop) {
 	known := map[string]bool{}
 	for _, n := range namesOf(root["proxies"]) {
 		known[n] = true
@@ -312,100 +392,18 @@ func validate(root map[string]any) (warns []string) {
 			}
 		}
 	}
-	warns = append(warns, validateDialers(root, known)...)
+	dw, loops := validateDialers(root, known)
+	warns = append(warns, dw...)
 	missing := map[string]bool{}
 	rules, _ := root["rules"].([]any)
 	for _, r := range rules {
-		parts := strings.Split(fmt.Sprint(r), ",")
-		var policy string
-		switch {
-		case parts[0] == "MATCH" && len(parts) >= 2:
-			policy = parts[1]
-		case strings.ContainsAny(parts[0], "()") || parts[0] == "AND" || parts[0] == "OR" || parts[0] == "NOT" || parts[0] == "SUB-RULE":
-			continue // 逻辑规则、子规则不做校验
-		case len(parts) >= 3:
-			policy = parts[2]
-		default:
-			continue
-		}
-		if policy = strings.TrimSpace(policy); !ok(policy) && !missing[policy] {
+		policy, has := rulePolicy(fmt.Sprint(r)) // 逻辑规则、子规则不做校验
+		if has && !ok(policy) && !missing[policy] {
 			missing[policy] = true
 			warns = append(warns, fmt.Sprintf("规则引用了不存在的策略「%s」", policy))
 		}
 	}
-	return warns
-}
-
-// validateDialers 检查节点的前置代理：目标要存在，并且顺着「策略组 → 成员」「节点 → 它的前置代理」走不能回到节点自己，
-// 否则客户端选中那条路径时这个节点就连不上。只警告，不改动配置。
-func validateDialers(root map[string]any, known map[string]bool) (warns []string) {
-	next := map[string][]string{} // 名称 → 从它出发可能经过的下一跳
-	proxies, _ := root["proxies"].([]any)
-	for _, p := range proxies {
-		if pm, _ := p.(map[string]any); pm != nil {
-			if d, ok := pm["dialer-proxy"]; ok && fmt.Sprint(d) != "" {
-				next[fmt.Sprint(pm["name"])] = []string{fmt.Sprint(d)}
-			}
-		}
-	}
-	groups, _ := root["proxy-groups"].([]any)
-	for _, g := range groups {
-		if gm, _ := g.(map[string]any); gm != nil {
-			members, _ := gm["proxies"].([]any)
-			for _, m := range members {
-				next[fmt.Sprint(gm["name"])] = append(next[fmt.Sprint(gm["name"])], fmt.Sprint(m))
-			}
-		}
-	}
-	reaches := func(from, target string) bool {
-		seen := map[string]bool{}
-		stack := []string{from}
-		for len(stack) > 0 {
-			n := stack[len(stack)-1]
-			stack = stack[:len(stack)-1]
-			if n == target {
-				return true
-			}
-			if seen[n] {
-				continue
-			}
-			seen[n] = true
-			stack = append(stack, next[n]...)
-		}
-		return false
-	}
-	missing := map[string]bool{}
-	var looped []string
-	loopedBy := map[string][]string{} // 前置代理 → 会绕回自己的节点
-	for _, name := range namesOf(proxies) {
-		ds := next[name]
-		if len(ds) == 0 {
-			continue
-		}
-		d := ds[0]
-		switch {
-		case !known[d]:
-			if !missing[d] {
-				missing[d] = true
-				warns = append(warns, fmt.Sprintf("前置代理「%s」不存在（要填策略组名或节点名）", d))
-			}
-		case reaches(d, name):
-			if loopedBy[d] == nil {
-				looped = append(looped, d)
-			}
-			loopedBy[d] = append(loopedBy[d], name)
-		}
-	}
-	for _, d := range looped {
-		names := loopedBy[d]
-		more := ""
-		if len(names) > 3 {
-			more = fmt.Sprintf(" 等 %d 个节点", len(names))
-			names = names[:3]
-		}
-		warns = append(warns, fmt.Sprintf("前置代理「%s」里能选到以它为前置的节点「%s」%s，选中时会形成环、连不上；请让它只包含用作跳板的节点", d, strings.Join(names, "」「"), more))
-	}
-	return warns
+	return warns, loops
 }
 
 // mergeUserinfo 汇总多个订阅的流量信息：流量求和，到期时间取最早。

@@ -36,6 +36,7 @@
 | `build.go` | 核心流程 `Build`：底板 → 合并节点 → 策略组 → Parser → 校验 → 输出 YAML |
 | `upstream.go` | 底板策略组的改写（`baseGroups`），其他来源节点要带上的 hosts（`nodeHosts`） |
 | `groups.go` | 订阅组新增的策略组：生成（`addGroups`）和保存时的规范化（`normalizeGroups`） |
+| `dialer.go` | 前置代理：自动生成的前置组（`addAutoDialers`）、按 mihomo 规则展开策略组成员（`groupMembers`）、成环检查（`validateDialers`） |
 | `uri.go` | 分享链接（ss / vmess / trojan / vless / hysteria2）→ Clash 节点 |
 | `parser.go` | CFW Parsers 语法实现、正则封装 |
 | `access.go` | 订阅链接的访问记录、客户端 IP 的判定 |
@@ -43,6 +44,7 @@
 | `uafollow.go` | 拉取 UA 跟随 Clash Verge Rev 最新版本：定期查最新 release 的 tag |
 | `web/index.html` | 管理界面 |
 | `build_test.go` | 测试：端到端构建、底板不可用时报错、上游走代理、前置代理 |
+| `dialer_test.go` | 测试：自动生成的前置组、按 include-all / filter 展开的成环检查、Parser 加的节点的提示 |
 | `api_test.go` | 测试：旧配置作废、配置校验（来源、引用、底板）、保存冲突、预览不保存与来源拉取状态、只用缓存的预览、来源缓存的查看 / 刷新 / 下载 |
 | `upstream_test.go` | 测试：节点 hosts、上游配置的保存 |
 | `groups_test.go` | 测试：新增的策略组（成员、顺序、跳过和警告、Parser 引用）、规范化 |
@@ -61,7 +63,8 @@ Config
 ├─ Profiles[]              订阅组
 │   ├─ ID / Name / Token / FileName
 │   ├─ Base                底板机场的来源 ID
-│   ├─ Sources[]           对节点来源的引用（SourceRef）：Source（来源 ID）、Enabled、Prefix、Include、Exclude、Dialer（前置代理）
+│   ├─ Sources[]           对节点来源的引用（SourceRef）：Source（来源 ID）、Enabled、Prefix、Include、Exclude、
+│   │                       Dialer（前置代理）、DialerAuto / DialerFilter（自动生成前置组及其节点正则）
 │   ├─ Groups[]            新增的策略组（ProxyGroup）：ID、Name、Groups（底板策略组名）、Filter（节点名正则）、Icon（图标链接）
 │   └─ Parser
 └─ 全局：CacheMinutes、UpdateInterval、UserAgent（拉取 UA）、FollowUA（拉取 UA 跟随 Clash Verge Rev 版本）、UnlockUserAgent（解锁 UA）
@@ -86,13 +89,15 @@ Config
    底板没拿到（拉取失败且没有缓存），或者内容里没有策略组 → 返回错误，不输出
 3. root = 底板配置（去掉 proxies 后的整份，深拷贝）
 4. 汇总节点       底板的在前，其余按引用顺序。按引用的 Include/Exclude 过滤 → 加 Prefix → 重名加序号
-                 → 引用上有 Dialer 的写上 dialer-proxy。记下底板节点的「上游名 → 输出名」
+                 → 引用上填了 Dialer 的写上 dialer-proxy（选了自动生成的先不写）。记下底板节点的「上游名 → 输出名」
                  非底板来源：顺着节点的 server 找出要用的上游 hosts / fake-ip-filter，合并进 root（nodeHosts）
 5. 策略组         baseGroups：底板的策略组，成员里的节点名换成输出名，被过滤掉的去掉；
                  包含底板全部节点的组再追加其他来源的节点
                  addGroups：在末尾追加本组新增的策略组
+                 addAutoDialers：再追加自动生成的前置组，给对应引用的节点写上 dialer-proxy
 6. ApplyParser    本组 Parser 对 root 做最终修改
-7. validate       检查引用了不存在的策略 / 成员 / 前置代理、前置代理成环，只产生警告
+7. validate       检查引用了不存在的策略 / 成员 / 前置代理、前置代理成环，只产生警告；
+                 再提示 Parser 加的、哪里都用不到的节点（unusedNodes）
 8. toNode + 编码  输出键顺序稳定的 YAML
 ```
 
@@ -115,7 +120,25 @@ Config
 - `BuildResult.NewGroups`（`GroupStatus`）按 `Profile.Groups` 的顺序记下每个组的成员或跳过的原因，按 `ID` 对应到界面上
 - `normalizeGroups`（`validateConfig` 里调用）：ID 格式同来源 ID，不对或重复的重新生成（ID 只用于界面对应，不需要全局唯一）；组名和图标链接去掉首尾空白，组名不能为空、不能重复、不能是 `DIRECT` 这类内置策略，图标链接只接受 http(s)，否则拒绝保存；选中的底板策略组名去掉空的和重复的。是否和底板的组重名要拉到底板才知道，所以只在生成时检查
 
-**前置代理（代理链）**：`SourceRef.Dialer` 非空时，这条引用下的节点都写上 `dialer-proxy`（值是策略组名或节点名），典型用法是「自建落地节点经由机场节点出去」。它属于引用而不是来源，不进缓存键；填了就覆盖节点自带的 `dialer-proxy`，没填则保留自带的。前置代理的成员里不能有以它为前置的节点，否则会绕回自己。`Build` **不会自动排除**，只由 `validateDialers` 报警告（这是用户确认的取舍）。这个检查在 Parser 之后做，所以手填节点自带的、Parser 写上的 `dialer-proxy` 也会被检查。
+**前置代理（代理链）**（`dialer.go`）：典型用法是「自建落地节点经由机场节点出去」。设置在引用上，不进缓存键。两种方式二选一（界面上是分段按钮，只显示所选方式的输入框；两个字段的值都保留，切回来还在）：
+
+- **指定**（`SourceRef.Dialer`）：非空时这条引用的节点都写上 `dialer-proxy: <填的名字>`（策略组名或节点名），覆盖节点自带的；没填则保留节点自带的。填的组里能选到这些节点自己就会成环，`Build` **不会自动从底板的组里排除**，只由 `validateDialers` 报警告（用户确认的取舍：不动底板的组）
+- **自动生成**（`SourceRef.DialerAuto`，正则在 `DialerFilter`）：`addAutoDialers` 在所有策略组（底板的、新增的）之后追加一个 select 组「`<来源名> 前置`」，这条引用的节点都写上指向它的 `dialer-proxy`。成员是输出名（加了前缀、重名加了序号的）匹配正则的节点，**所有来源的**，按输出顺序，正则为空取全部。**带前置代理的节点一律不进前置组**：引用上指定了前置的、节点自带 `dialer-proxy` 的、以及各个自动生成前置的引用自己的节点。所以前置组结构上不会成环；落地节点照常并进底板的「全部节点」组，可以在「节点选择」里选它，前置线路在前置组里单独切换
+  - 组名和已有的策略组、节点、前面生成的前置组重名时加序号（`家宽 前置 2`）并警告；落地节点指向改名后的组
+  - 正则写错或一个节点都匹配不到时，成员填 **`REJECT`** 并警告：经由它的节点连不上。**不能填 `DIRECT`**：那样落地节点会被直连，和用户要的「经由机场」相反，而且不会有任何报错。正则写错时不猜（不当作全部）
+  - 停用的引用不生成；引用了但没拉到节点的照样生成（组名稳定，客户端记住的选择不丢）
+  - 在 Parser 之前生成，Parser 可以改它；Parser 往里加了带前置的节点也不会被剔除，由成环检查报出来
+
+对流量走向的要求很严，成环检查（`validateDialers`）的原则是**宁可多报不能漏报**。它在 Parser 之后对最终配置做，所以手填节点自带的、Parser 写上的 `dialer-proxy` 也会检查。从每个带前置的节点出发，顺着「节点 → 它的前置代理」「策略组 → 可能选到的成员」走，能回到自己就是环。策略组可能选到的成员按 mihomo 的规则展开（`groupMembers`）：
+
+- `proxies` 里显式列出的成员
+- `include-all` / `include-all-proxies` 为真时加上配置里的全部节点（不含策略组），有 `filter` 只取匹配的（可用 `` ` `` 分隔多条正则），再去掉匹配 `exclude-filter` 的。机场的地区组常这么写，只看 `proxies` 会漏掉落地节点被自动选进去的环
+- 拿不准的按「可能选到」算：`filter` 正则无效当作全部匹配，`exclude-filter` 无效当作不排除；`exclude-filter` 只作用于 include-all 选入的节点；`exclude-type` 不考虑（mihomo 比的是内部类型名，和 `type` 字段对不上）
+- `use` / `include-all-providers` 引入的是 proxy-providers 里的节点，不会是 `proxies` 里的节点，不影响判断
+
+结果放在 `BuildResult.Loops`（`DialerLoop`：节点、它的前置代理、成环的路径，首尾都是这个节点），每个前置代理一条警告，带一条示例路径，经 include-all 选入的那一步标「（include-all）」。环上的每个节点都会被报（A 经 B 回到 A 时 B 也一样连不上）。`SubStatus.Dialer` 是这条引用的节点写上的前置代理（填的名字或前置组的实际名字），`SubStatus.DialerMembers` 是自动生成的前置组的成员。
+
+**Parser 加的节点**不经过前面的流程：不过滤、不加前缀、不并进底板的组、不匹配新增策略组和前置组的正则、不写引用上的前置。`unusedNodes` 找出 Parser 之后新出现的（含改了名的）、不在任何策略组里（含 include-all 选入）、不是谁的前置代理、也没有规则直接指向的节点，提示改用手动节点来源。
 
 `BuildResult.Subs` 里每个用到的引用一条状态（`SubStatus`）：底板排第一（`Base` 为真），`Index` 是引用在订阅组 `Sources` 里的下标，`ID` 是来源 ID。同一个来源可能被引用多次，所以前端用「下标 + 来源 ID」对应到行上。`SubStatus.Nodes` 按上游顺序列出每个节点经过「只保留 / 排除」后的去向（`NodeChange`：原名，以及加了前缀、重名加了序号后的输出名，被过滤掉的没有输出名），预览页据此显示每个来源保留和过滤掉了哪些节点。流量信息（`Subscription-Userinfo`）按来源去重后求和，到期取最早。
 
@@ -205,7 +228,7 @@ Config
 | `GET /api/ua-version` | 是 | `UAVersion`：跟随版本时查到的 Clash Verge Rev 版本 `{version, okAt, checkedAt, error}`。`POST` 先立即查一次再返回 |
 | `POST /api/source-cache` | 是 | `{config, source}`：按 `config`（前端当前的配置）里的设置返回各远程来源的缓存 `{caches: {来源 ID: CacheInfo}, now}`，没有缓存的不出现，不请求上游。带 `source` 时先跳过缓存重新拉取这个来源，失败的原因放在 `error` 里 |
 | `POST /api/source-download` | 是 | `{config, source}` → `{yaml}`：这个来源的缓存还原成的完整配置。没有缓存返回 404，不请求上游 |
-| `POST /api/preview` | 是 | `{config, profile, refresh}`：`config` 是前端当前的整份配置，`profile` 是订阅组在其中的下标。不保存。返回 `{yaml, subs, newGroups, warnings, total, groups, rules, userinfo}` |
+| `POST /api/preview` | 是 | `{config, profile, refresh}`：`config` 是前端当前的整份配置，`profile` 是订阅组在其中的下标。不保存。返回 `{yaml, subs, newGroups, loops, warnings, total, groups, rules, userinfo}` |
 | `POST /api/format-parser` | 是 | `{text}` → `{text}`：Parser 编辑框的「格式化」。`FormatParser` 经 `yaml.Node` 往返，统一 2 空格缩进，注释、引号、流式写法保留；YAML 有错返回 400 |
 | `GET /api/access?profile=<id>` | 是 | `{records}`，该订阅组的访问记录，最新的在前 |
 | `DELETE /api/access?profile=<id>` | 是 | 清空该订阅组的访问记录 |
@@ -219,7 +242,8 @@ Config
 
 - **左栏 `rail()`**：列出所有订阅组（副标题是底板名），底部是「节点来源」「全局设置」「退出登录」
 - **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页（节点来源、策略组、Parser、预览、本组设置），每个对应一个 `tabXxx(p)`
-- **节点来源标签页 `tabSubs(p)`**：底板那行带「底板」标签、启用框禁用；其他远程来源有「设为底板」。只能选用已有来源、移除引用、改 `SourceRef` 上的字段；来源内容只读（`sourceSummary`），新建、修改和删除只在「节点来源」页（`sourcesPage`），免得在一个组里顺手一改、别的组跟着变。订阅组里不放新建来源或跳转到「节点来源」页的入口。增删引用后调 `fixBase(p)`
+- **节点来源标签页 `tabSubs(p)`**：底板那行带「底板」标签、启用框禁用；其他远程来源有「设为底板」。只能选用已有来源、移除引用、改 `SourceRef` 上的字段；来源内容只读（`sourceSummary`），新建、修改和删除只在「节点来源」页（`sourcesPage`），免得在一个组里顺手一改、别的组跟着变。订阅组里不放新建来源或跳转到「节点来源」页的入口。增删引用后调 `fixBase(p)`。前置代理是 `dialerField`：「指定 / 自动生成」分段按钮和输入框排在一行，隐藏的那个字段的修改标在分段按钮上；「指定」的候选（`dialerCandidates`）是底板的策略组、本组新增的组、自动生成的前置组，以及最近一次预览里的全部节点名；行头的「经由 …」用 `dialerName(r)`（自动生成时按 `<来源名> 前置` 推算，重名改了序号的以预览为准）
+- **预览标签页 `tabPreview(p)`**：每个来源一行，行头带「经由 …」和「N 个节点前置成环」；展开后先列前置代理（自动生成的前置组列出成员，`REJECT` 标红），再列保留和过滤掉的节点，成环的节点标红、悬停看路径（`nodeChanges`）
 - **策略组标签页 `tabGroups(p)`**：本组新增的策略组，每项可展开，填名称、节点正则、图标链接（行首显示图标预览，`groupIcon`：列表里有任一组配了图标时各行都占位、名称对齐，加载失败的隐藏但占位；都没有图标时不占位，名称和其他列表对齐。点图标也展开行，只有行首的复选框不展开），勾选底板策略组（`groupPicker`：候选取自 `srcStatus[p.base].groups`，之前选过、底板里已经没有的也列出来以便取消；勾选的顺序就是成员顺序，标上序号；勾选时只更新序号和修改标记，不重绘）。生成过预览就在行上显示成员数或跳过的原因，预览页也列出每个新增组的成员
 - **`field(label, obj, key, opts)`**：绑定到 `obj[key]` 的表单控件，输入时写回并调 `markDirty()`。不属于配置的临时输入传 `local: true`
 - **未保存的修改**：加载、保存成功、重置令牌后把配置存一份到 `saved`。`markDirty()` 用 `diffConfig(cfg, saved)` 逐项对比得出 `changes`（改回原值的不算），每项带位置（`page` / `pid` / `tab`）、对象和字段（`obj` / `key`）以及清单上显示的文字。引用没有 ID，按「同一来源的第 n 次引用」配对；新增的策略组按 ID 配对。页面上的标记（左栏、标签页、行上的圆点 `dot()`，输入框的竖条 `track()`）在渲染时用 `watch()` 登记。标记一律画在控件内侧（`inset` 阴影），不向外凸出，免得控件看起来和同一列错开；来源行里的启用复选框靠行上的圆点标出，不单独加标记；新增策略组的那组勾选框整体当一个控件（`.checks`，外框和输入框一样），用竖条标记。被隐藏的字段要把标记和跳转挂到可见的控件上（如跟随版本时隐藏的自定义 UA 挂在分段按钮上），`markDirty()` 时逐个更新，不重绘。清单里点一项调 `jump()`：切页面和标签页、展开行、滚动并聚焦到输入框。「放弃修改」把 `cfg` 换回 `saved` 的副本，并丢掉用未保存内容生成的预览。给配置加了用户可改的字段，要加进 `diffConfig` 对应的 `*_FIELDS`，否则改了它不会被当成修改
@@ -286,7 +310,7 @@ Config
 
 **解锁步骤要更复杂**（POST、自定义 Header、多步）：改 `fetchSubscription`。给 `Source` 加影响拉取结果的字段后，记得把它加进 `cacheKey`。
 
-**给来源引用加配置项**：① `store.go` 的 `SourceRef` 加字段（先确认它属于引用而不是来源）；② `build.go` 使用它；③ `web/index.html` 的 `tabSubs` 里加一个 `field(...)`，`blankRef` 和 `normalize` 里补默认值。
+**给来源引用加配置项**：① `store.go` 的 `SourceRef` 加字段（先确认它属于引用而不是来源）；② `build.go` 使用它；③ `web/index.html` 的 `tabSubs` 里加一个 `field(...)`，`blankRef` 和 `normalize` 里补默认值，`REF_FIELDS` 里加上（否则改了不算修改）。
 
 **输出其他客户端格式**（Loon 等非 mihomo 系）：加一个输出侧的渲染器，接在 `validate` 之后、替换 YAML 编码；上游拉取和输入解析不用动。见 [CLIENT-SUPPORT.md](CLIENT-SUPPORT.md)。
 
@@ -304,6 +328,9 @@ go vet ./... && gofmt -l .
 - `TestBuildEndToEnd`：底板排第一且不看启用开关、先解锁再拉取、解锁 UA、过滤、手动节点、同一来源引用两次（只拉一次上游、流量只算一次）、停用的引用、重名处理、底板策略组的改写（全部节点的组带上其他节点、部分节点的组只换名、全被过滤的填 DIRECT、`use` 原样保留）、底板的规则和其他设置原样保留、其他来源的 hosts、Parser、失败时回退到磁盘缓存且结果不变
 - `TestBuildBaseErrors`：没选底板、底板是手动节点、底板不在本组、底板没有策略组、底板拉取失败
 - `TestDialerProxy`：前置代理写成 `dialer-proxy`、不填时保留节点自带的值、目标不存在和成环的警告
+- `TestAutoDialer`：自动生成的前置组的成员（所有来源、按输出名匹配、剔除带前置的节点）、排在最后、覆盖节点自带的前置、正则为空、正则无效或匹配不到时填 REJECT、重名加序号、停用的引用不生成、Parser 造成的环能报出
+- `TestDialerLoopIncludeAll`：按 include-all / include-all-proxies / filter（含多条正则）/ exclude-filter 展开成员，正则无效时按保守方向，`use` 不影响，多层的环两个节点都报
+- `TestParserAddedNode`：Parser 加的节点不在任何组里时提示，加进组、被规则指向、被 include-all 选入时不提示；改名也算
 - `TestFetchUsesProxy` / `TestProxySummary`：订阅请求和解锁请求都经过 `HTTP_PROXY`；日志里的代理说明不泄露密码
 - `TestAddGroups` / `TestNormalizeGroups`：新增策略组的成员和顺序、和底板策略组或节点重名时跳过、底板策略组不存在、正则写错、没有成员填 DIRECT、Parser 能引用；ID、组名、底板策略组名的规范化和拒绝保存的情况
 - `TestValidateSourcesAndRefs`：来源 ID 的规范化、引用跟着改、悬空引用被去掉、底板的修正
@@ -355,5 +382,6 @@ git push origin v1.1.0
 - 访问记录的 IP 依赖反向代理正确追加 `X-Forwarded-For`；前面有公网 CDN 时记到的是 CDN 地址
 - 代理只能通过环境变量配置，所有来源共用，改了要重启服务
 - 会话存内存，重启即失效；不支持多实例共享
-- `validate` 不解析逻辑规则（`AND` / `OR` / `NOT`）和 `SUB-RULE` 里的策略名
+- `validate` 不解析逻辑规则（`AND` / `OR` / `NOT`）和 `SUB-RULE` 里的策略名；只被逻辑规则指向的 Parser 加的节点会被误报为「用不到」
+- 成环检查不考虑 `exclude-type`，一个组靠它排除了落地节点时会多报
 - 服务端会访问管理员填写的任意 http(s) 地址（订阅、解锁地址），没有内网地址限制；管理密码泄露等同于可从服务器发起请求
