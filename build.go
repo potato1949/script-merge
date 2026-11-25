@@ -115,8 +115,6 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 	entries := make([]*cacheEntry, len(subs))
 	res.Subs = make([]SubStatus, len(subs))
 	ttl := time.Duration(cfg.CacheMinutes) * time.Minute
-	ua := firstNonEmpty(strings.TrimSpace(cfg.UserAgent), defaultUA)
-	unlockUA := firstNonEmpty(strings.TrimSpace(cfg.UnlockUserAgent), chromeUA)
 	var wg sync.WaitGroup
 	for i, s := range subs {
 		wg.Add(1)
@@ -134,20 +132,19 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 				res.Subs[i] = st
 				return
 			}
-			st.URL, st.UA = strings.TrimSpace(s.URL), ua
-			if st.URL == "" {
+			url, ua, unlockUA := fetchArgs(cfg, s.Source)
+			if url == "" {
 				st.Error = "没有填写订阅链接"
 				res.Subs[i] = st
 				return
 			}
-			e, err := f.Get(s.Source, st.URL, ua, unlockUA, ttl, mode)
+			e, err := f.Get(s.Source, url, ua, unlockUA, ttl, mode)
 			if err != nil {
 				st.Error = err.Error()
 				st.Stale = e != nil
 			}
 			if e != nil {
 				st.Count = len(e.Proxies)
-				st.FetchedAt, st.ExpiresAt = e.FetchedAt, e.FetchedAt.Add(ttl)
 			} else if mode == FetchCacheOnly {
 				st.NoCache = true
 			}
@@ -207,12 +204,15 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 			warn("「%s」的排除%v", s.Name, err)
 		}
 		var servers []string
+		res.Subs[i].Nodes = make([]NodeChange, 0, len(e.Proxies))
 		for _, p := range e.Proxies {
 			name := fmt.Sprint(p["name"])
 			if (inc != nil && !reMatch(inc, name)) || (exc != nil && reMatch(exc, name)) {
+				res.Subs[i].Nodes = append(res.Subs[i].Nodes, NodeChange{Name: name})
 				continue
 			}
 			out := add(p, s.Prefix, strings.TrimSpace(s.Dialer))
+			res.Subs[i].Nodes = append(res.Subs[i].Nodes, NodeChange{Name: name, Out: out})
 			if i == 0 {
 				rename[name] = append(rename[name], out)
 			} else {
@@ -256,14 +256,21 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 	rules, _ := root["rules"].([]any)
 	res.Rules = len(rules)
 
+	if res.YAML, err = encodeYAML(root); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// encodeYAML 把配置树按输出的键顺序编码成 YAML（节点每个一行）。
+func encodeYAML(root map[string]any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
 	if err := enc.Encode(toNode(root, 0, "")); err != nil {
 		return nil, err
 	}
-	res.YAML = unescapeRunes(buf.Bytes())
-	return res, nil
+	return unescapeRunes(buf.Bytes()), nil
 }
 
 var escapedRune = regexp.MustCompile(`\\\\|\\U[0-9A-F]{8}`)

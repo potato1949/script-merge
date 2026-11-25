@@ -40,7 +40,7 @@
 | `version.go` | 程序版本：编译时指定的版本号，或构建信息里的 git tag / 提交 |
 | `web/index.html` | 管理界面 |
 | `build_test.go` | 测试：端到端构建、底板不可用时报错、上游走代理、前置代理 |
-| `api_test.go` | 测试：旧配置作废、配置校验（来源、引用、底板）、保存冲突、预览不保存与来源拉取状态、只用缓存的预览 |
+| `api_test.go` | 测试：旧配置作废、配置校验（来源、引用、底板）、保存冲突、预览不保存与来源拉取状态、只用缓存的预览、来源缓存的查看 / 刷新 / 下载 |
 | `upstream_test.go` | 测试：节点 hosts、上游配置的保存 |
 | `app_test.go` | 测试：Parser 命令语法与顺序、分享链接、代理说明 |
 | `access_test.go` / `version_test.go` | 测试：访问记录与客户端 IP；程序版本 |
@@ -72,7 +72,7 @@ Config
 
 订阅链接 `GET /sub/{token}` 和预览 `POST /api/preview` 都调用 `Build(cfg, profile, fetcher, mode)`。区别在配置从哪来：订阅链接用已保存的配置；预览用请求体里带来的、前端当前的那份（可能还没保存），先过一遍 `validateConfig` 再构建，不落盘。「先预览、满意再保存」是界面的基本流程，不要让预览依赖已保存的配置。
 
-`mode`（`FetchMode`）决定怎么用缓存：`FetchAuto` 是客户端拉取的流程（缓存过期才拉上游）；`FetchRefresh` 跳过缓存（`?refresh=1`、「跳过缓存重新拉取」）；`FetchCacheOnly` 只用同一个键、当前格式的已有缓存（过期的也用），绝不请求上游。前端打开预览页、该订阅组还没有预览结果时，自动带 `cached: true` 用它生成一份；底板没有缓存时 `Build` 返回 `errNoCache`，接口回 `{noCache: true}`，界面保持「还没有预览」；其他来源没有缓存的只标 `SubStatus.NoCache`、不并入。`SubStatus` 带上所用缓存的 `FetchedAt` / `ExpiresAt`（拉取时间 + 缓存时长），预览响应带服务端的 `now`，前端据此换算剩余时间，不受浏览器时钟偏差影响。
+`mode`（`FetchMode`）决定怎么用缓存：`FetchAuto` 是客户端拉取的流程（缓存过期才拉上游）；`FetchRefresh` 跳过缓存（`?refresh=1`、「节点来源」页的「刷新缓存」）；`FetchCacheOnly` 只用同一个键、当前格式的已有缓存（过期的也用），绝不请求上游。预览页没有常驻的生成按钮：每次进入预览页（`previewFor` 记着本次进入后已经生成过的订阅组，离开时清空），前端都按当前配置带 `cached: true` 重新生成一份，生成期间旧结果继续显示，展开状态按「下标 + 来源 ID」带过去（`loadPreview`）。底板没有缓存时 `Build` 返回 `errNoCache`，接口回 `{noCache: true}`，界面显示「底板还没有缓存」和「拉取并生成」；其他来源没有缓存的只标 `SubStatus.NoCache`、不并入，界面提示并给一个「拉取」。这两个按钮按 `FetchAuto` 生成（`fetchPreview`），缺的、过期的缓存会去拉上游。缓存本身的信息（创建、过期时间）不在预览里，在「节点来源」页看（见「上游拉取与缓存」）。
 
 ```
 1. 本组用到的来源：底板排第一个（不看启用开关），其余是启用的引用
@@ -102,7 +102,7 @@ Config
 
 **前置代理（代理链）**：`SourceRef.Dialer` 非空时，这条引用下的节点都写上 `dialer-proxy`（值是策略组名或节点名），典型用法是「自建落地节点经由机场节点出去」。它属于引用而不是来源，不进缓存键；填了就覆盖节点自带的 `dialer-proxy`，没填则保留自带的。前置代理的成员里不能有以它为前置的节点，否则会绕回自己。`Build` **不会自动排除**，只由 `validateDialers` 报警告（这是用户确认的取舍）。这个检查在 Parser 之后做，所以手填节点自带的、Parser 写上的 `dialer-proxy` 也会被检查。
 
-`BuildResult.Subs` 里每个用到的引用一条状态（`SubStatus`）：底板排第一（`Base` 为真），`Index` 是引用在订阅组 `Sources` 里的下标，`ID` 是来源 ID。同一个来源可能被引用多次，所以前端用「下标 + 来源 ID」对应到行上。流量信息（`Subscription-Userinfo`）按来源去重后求和，到期取最早。
+`BuildResult.Subs` 里每个用到的引用一条状态（`SubStatus`）：底板排第一（`Base` 为真），`Index` 是引用在订阅组 `Sources` 里的下标，`ID` 是来源 ID。同一个来源可能被引用多次，所以前端用「下标 + 来源 ID」对应到行上。`SubStatus.Nodes` 按上游顺序列出每个节点经过「只保留 / 排除」后的去向（`NodeChange`：原名，以及加了前缀、重名加了序号后的输出名，被过滤掉的没有输出名），预览页据此显示每个来源保留和过滤掉了哪些节点。流量信息（`Subscription-Userinfo`）按来源去重后求和，到期取最早。
 
 内存中的配置树统一使用 `map[string]any` / `[]any`（不是 `[]map[string]any` 或 `[]string`），因为 Parser 的路径命令要对任意位置做通用遍历。往 `root` 里放数据时请保持这个约定，否则 `applyPath` 和 `toNode` 不认识。
 
@@ -125,6 +125,7 @@ Config
 - 缓存内容有格式版本（`cacheFormat`）：改了缓存里存什么就加一，旧格式的缓存视为已过期（拉取失败时仍可作为旧缓存用）
 - 来源 ID 被用作缓存文件名，所以 `validateConfig` 只接受 16 位十六进制且全局唯一的 ID，其他一律重新生成（防路径穿越）；来源 ID 变了，订阅组里的引用和底板跟着改
 - `Fetcher.state` 记下每个来源最近一次**实际请求上游**的结果（`SourceState`：时间、错误、上次成功的时间 / 节点数 / 流量信息 / 策略组名），`GET /api/source-status` 给界面用：来源的状态标签、流量信息、前置代理的候选。只在内存里，重启后从磁盘缓存恢复成功的部分
+- 「节点来源」页展开来源时顶部是信息面板（`sourceFacts`：缓存和使用它的订阅组），远程来源显示它的缓存（`POST /api/source-cache`）：节点数、创建时间、过期时间和剩余时间（按响应里服务端的 `now` 换算，不受浏览器时钟偏差影响），可以「刷新缓存」（跳过缓存重新拉取这一个来源）和「下载配置文件」（`POST /api/source-download`，把缓存还原成完整的 Clash 配置：`upstream.config()` 把节点放回 `proxies`，经 `encodeYAML` 输出，不是上游的原始文本）。两个接口和预览一样带着前端当前的配置，缓存键按其中的链接、UA 算（`fetchArgs`，和 `Build` 共用）；只校验全局设置和节点来源，订阅组的内容不影响。前端按 `cacheSig()`（链接、解锁地址、UA、缓存时长）判断设置变了没有，变了或重新进入这个页面时重新读取
 - **代理**：只走环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`。`fetchSubscription` 的 `http.Client` 没有自定义 `Transport`，落在 `http.DefaultTransport` 上，它本身就读这几个变量。**以后换了自定义 `Transport`，要带上 `Proxy: http.ProxyFromEnvironment`**，否则代理静默失效——`TestFetchUsesProxy` 会发现。标准库对回环地址永远不走代理，且环境变量只在第一次发请求时读一次，所以测试在 `TestMain` 里设置代理，并用一个不存在的域名当上游
 
 上游内容只认 Clash YAML 或分享链接列表，输出始终是 Clash YAML。以后支持其他客户端的做法见 [CLIENT-SUPPORT.md](CLIENT-SUPPORT.md)。
@@ -185,6 +186,8 @@ Config
 | `POST /api/password` | 是 | `{old, new}` |
 | `POST /api/token` | 是 | `{profile}`，重置该订阅组的令牌，返回新配置 |
 | `GET /api/source-status` | 是 | `{来源 ID: SourceState}`，各来源最近一次实际请求上游的结果 |
+| `POST /api/source-cache` | 是 | `{config, source}`：按 `config`（前端当前的配置）里的设置返回各远程来源的缓存 `{caches: {来源 ID: CacheInfo}, now}`，没有缓存的不出现，不请求上游。带 `source` 时先跳过缓存重新拉取这个来源，失败的原因放在 `error` 里 |
+| `POST /api/source-download` | 是 | `{config, source}` → `{yaml}`：这个来源的缓存还原成的完整配置。没有缓存返回 404，不请求上游 |
 | `POST /api/preview` | 是 | `{config, profile, refresh}`：`config` 是前端当前的整份配置，`profile` 是订阅组在其中的下标。不保存。返回 `{yaml, subs, warnings, total, groups, rules, userinfo}` |
 | `POST /api/format-parser` | 是 | `{text}` → `{text}`：Parser 编辑框的「格式化」。`FormatParser` 经 `yaml.Node` 往返，统一 2 空格缩进，注释、引号、流式写法保留；YAML 有错返回 400 |
 | `GET /api/access?profile=<id>` | 是 | `{records}`，该订阅组的访问记录，最新的在前 |
@@ -195,7 +198,7 @@ Config
 
 ## 前端结构（`web/index.html`）
 
-没有框架：`h(tag, attrs, ...kids)` 建元素（子元素数组可以任意嵌套，会被展平），`render()` 整页重绘。状态是几个模块级变量：`cfg`（整份配置）、`page`（`group` / `sources` / `settings`）、`pi`（当前订阅组下标）、`tab`、`saved`（最近一次从服务端拿到的配置）、`changes` / `dirty`（未保存的修改），以及不属于配置的 `srcStatus`（来源拉取状态）、`previews`（各订阅组最近一次预览）、`accessLog`。
+没有框架：`h(tag, attrs, ...kids)` 建元素（子元素数组可以任意嵌套，会被展平），`render()` 整页重绘。状态是几个模块级变量：`cfg`（整份配置）、`page`（`group` / `sources` / `settings`）、`pi`（当前订阅组下标）、`tab`、`saved`（最近一次从服务端拿到的配置）、`changes` / `dirty`（未保存的修改），以及不属于配置的 `srcStatus`（来源拉取状态）、`srcCache`（「节点来源」页显示的各来源缓存）、`previews`（各订阅组最近一次预览）、`accessLog`。
 
 - **左栏 `rail()`**：列出所有订阅组（副标题是底板名），底部是「节点来源」「全局设置」「退出登录」
 - **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页（节点来源、Parser、预览、本组设置），每个对应一个 `tabXxx(p)`
@@ -205,7 +208,7 @@ Config
 - **`item(obj, opts)`**：可展开的行。展开状态记在 `openItems`（WeakSet，按对象引用），重绘和排序后仍保持展开。`body(nameEl)` 只在展开时构建
 - **`dialog(title, build, actions)`**：基于原生 `<dialog>` 的对话框
 - **`newID()`**：按服务端的格式生成 ID。新建来源和订阅组时用它，这样不用先保存就能被引用、预览；令牌始终由服务端发，判断「还没保存过」看 `p.token`
-- **保存 `save()`**：409 时询问是否覆盖。**预览**把 `cfg` 整份 POST 过去，不调 `save()`
+- **保存 `save()`**：409 时询问是否覆盖。**预览**把 `cfg` 整份 POST 过去，不调 `save()`。订阅组标题旁的「下载配置文件」（`downloadProfile`）例外：它要和订阅链接的输出一致，所以把 `saved` 和订阅组在其中的下标交给 `POST /api/preview`（不带 `cached`，按客户端拉取的缓存规则），不记访问记录；有未保存的修改时提示下载的不含这些修改
 - **何时调用 `render()`**：结构变化（增删、排序、换底板）才重绘；普通文本输入不重绘，否则会丢焦点
 - **`normalize(cfg)`**：从服务端拿到配置后补齐缺失字段。给数据模型加了字段，在这里补默认值
 - **配色**：集中在文件顶部的 CSS 变量（浅色、深色两组），风格参考 Claude 官网
@@ -285,7 +288,8 @@ go vet ./... && gofmt -l .
 - `TestValidateSourcesAndRefs`：来源 ID 的规范化、引用跟着改、悬空引用被去掉、底板的修正
 - `TestOldConfigReset`：旧版本配置作废、留下备份、密码保留
 - `TestSaveConflict` / `TestPreviewUnsavedAndSourceStatus`：拿着旧版本号保存被拒绝、`force` 能覆盖；预览不落盘；来源状态在成功、失败、重启后的取值
-- `TestPreviewCachedOnly`：只用缓存的预览不请求上游；底板没缓存返回 `noCache`；其他来源没缓存只做标记；过期的缓存照用；缓存的创建 / 过期时间
+- `TestPreviewCachedOnly`：只用缓存的预览不请求上游；底板没缓存返回 `noCache`；其他来源没缓存只做标记；过期的缓存照用
+- `TestSourceCacheAPI`：来源缓存按请求里的设置查找、不请求上游；刷新跳过缓存、失败时带原因并保留旧缓存；换 UA 后是另一份缓存；下载还原出完整配置；Parser 写错不影响
 - `TestNodeHosts` / `TestParseSubscriptionKeepsDoc`：hosts 的查找与合并；上游配置去掉节点后整份留下、非字符串的键能存进缓存
 - `TestAccessLog` / `TestClientIP` / `TestBuildInfo` / `TestTagVersion` / `TestCommands` / `TestParserOrder` / `TestURIs`：见各自的注释
 

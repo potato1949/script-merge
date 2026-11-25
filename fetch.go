@@ -55,6 +55,20 @@ type upstream struct {
 // groups 是上游配置里的策略组（只要带名字的）。
 func (u *upstream) groups() []map[string]any { return mapsOf(u.Doc["proxy-groups"], true) }
 
+// config 把缓存的内容还原成一份完整的 Clash 配置（节点放回 proxies）。分享链接列表只有 proxies。
+func (u *upstream) config() map[string]any {
+	root := map[string]any{}
+	if u.Doc != nil {
+		root = deepCopy(u.Doc).(map[string]any)
+	}
+	proxies := make([]any, len(u.Proxies))
+	for i, p := range u.Proxies {
+		proxies[i] = deepCopy(p)
+	}
+	root["proxies"] = proxies
+	return root
+}
+
 // hosts 和 fakeIPFilter 是上游配置里的 hosts 与 dns.fake-ip-filter，节点地址经 hosts 映射时要用（见 nodeHosts）。
 func (u *upstream) hosts() map[string]any {
 	h, _ := u.Doc["hosts"].(map[string]any)
@@ -77,20 +91,37 @@ const (
 
 // SubStatus 描述一次构建中某个来源的状态。
 type SubStatus struct {
-	Index     int       `json:"index"` // 在订阅组的来源列表里的下标
-	ID        string    `json:"id"`    // 来源 ID
-	Name      string    `json:"name"`
-	Base      bool      `json:"base"`  // 是不是底板机场
-	URL       string    `json:"url"`   // 本次实际使用的上游链接
-	UA        string    `json:"ua"`    // 本次实际使用的 UA
-	Count     int       `json:"count"` // 拉取到的节点数（过滤前）
-	Used      int       `json:"used"`  // 过滤后实际使用的节点数
-	Error     string    `json:"error,omitempty"`
-	Stale     bool      `json:"stale"`             // 拉取失败，使用了旧缓存
-	Hosts     int       `json:"hosts,omitempty"`   // 带过来的上游 hosts 条数（非底板来源的节点地址经 hosts 映射时才有）
-	FetchedAt time.Time `json:"fetchedAt"`         // 所用内容（缓存）的拉取时间，手动节点没有
-	ExpiresAt time.Time `json:"expiresAt"`         // 这份缓存的过期时间 = 拉取时间 + 缓存时长
-	NoCache   bool      `json:"noCache,omitempty"` // 只用缓存时，这个来源还没有可用的缓存
+	Index   int          `json:"index"` // 在订阅组的来源列表里的下标
+	ID      string       `json:"id"`    // 来源 ID
+	Name    string       `json:"name"`
+	Base    bool         `json:"base"`  // 是不是底板机场
+	Count   int          `json:"count"` // 拉取到的节点数（过滤前）
+	Used    int          `json:"used"`  // 过滤后实际使用的节点数
+	Nodes   []NodeChange `json:"nodes"` // 来源里的每个节点在本组里的去向，按上游顺序
+	Error   string       `json:"error,omitempty"`
+	Stale   bool         `json:"stale"`             // 拉取失败，使用了旧缓存
+	Hosts   int          `json:"hosts,omitempty"`   // 带过来的上游 hosts 条数（非底板来源的节点地址经 hosts 映射时才有）
+	NoCache bool         `json:"noCache,omitempty"` // 只用缓存时，这个来源还没有可用的缓存
+}
+
+// NodeChange 是来源里的一个节点经过「只保留 / 排除」之后的去向：
+// Out 是它在输出里的名字（加了前缀、重名加了序号的），被过滤掉的为空。
+type NodeChange struct {
+	Name string `json:"name"`
+	Out  string `json:"out,omitempty"`
+}
+
+// CacheInfo 是一个来源当前设置（链接、UA、解锁地址）对应的缓存。
+type CacheInfo struct {
+	FetchedAt time.Time `json:"fetchedAt"`
+	ExpiresAt time.Time `json:"expiresAt"` // 拉取时间 + 缓存时长
+	Count     int       `json:"count"`
+}
+
+// fetchArgs 是拉取来源 s 实际用的链接、UA 和解锁 UA。Build 和来源缓存的接口都用它，保证算出同一个缓存键。
+func fetchArgs(cfg Config, s Source) (url, ua, unlockUA string) {
+	return strings.TrimSpace(s.URL), firstNonEmpty(strings.TrimSpace(cfg.UserAgent), defaultUA),
+		firstNonEmpty(strings.TrimSpace(cfg.UnlockUserAgent), chromeUA)
 }
 
 // SourceState 是一个节点来源最近一次实际请求上游的结果（命中缓存的不算）。

@@ -132,6 +132,17 @@ button:disabled { opacity: .4; cursor: default; }
 .tag.err { color: var(--danger); background: var(--accent-soft); }
 .warnbox { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 9px 13px; margin-bottom: 12px; font-size: 13px; }
 .warnbox div + div { margin-top: 3px; }
+.nodes { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.nodes .chip { white-space: normal; }
+.chip.drop { text-decoration: line-through; }
+/* 来源展开后的信息面板：标签在上、数值在下，横向排开，操作按钮靠右 */
+.facts { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 32px; background: var(--sunken); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin-bottom: 18px; }
+.fact { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.fact small { font-size: 12px; color: var(--muted); }
+.fact > span { font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fact > span.warn { color: var(--warn); }
+.fact > span.muted { color: var(--muted); }
+.facts .acts { margin-left: auto; display: flex; gap: 6px; }
 pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; max-height: 62vh; font: 12.5px/1.6 var(--mono); margin: 0; }
 .tblwrap { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; min-width: 820px; }
@@ -211,6 +222,7 @@ let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
 const accessLog = {};          // 订阅组 ID → 访问记录（加载中为 null）
 let srcStatus = {};            // 节点来源 ID → 最近一次实际拉取上游的结果（服务端内存里的，不属于配置）
+let srcCache = null;           // 各来源按页面上当前设置对应的缓存：{ sig, caches: {来源 ID → 缓存信息}, skew, error }
 const ui = { accessAll: false };
 let uid = 0;                   // 给 datalist 生成不重复的 id
 const nextId = prefix => prefix + (++uid);
@@ -272,6 +284,11 @@ function track(el, obj, key) {
   if (jumpTo?.obj === obj && jumpTo.key === key) jumpEl = el;
 }
 window.addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
+// 把文本存成 YAML 文件下载，name 是不带扩展名的文件名
+function saveFile(name, text) {
+  const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/yaml' })), download: (name.trim() || '订阅').replace(/[\\/:*?"<>|]/g, '_') + '.yaml' });
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 function copyText(text, done) {
   navigator.clipboard.writeText(text).then(() => toast(done), () => toast('复制失败，请手动复制'));
 }
@@ -453,7 +470,7 @@ function discardChanges() {
 }
 
 // ---------- 框架：左栏 + 工作区 ----------
-function go(p, i) { page = p; if (i != null) pi = i; render(); window.scrollTo(0, 0); }
+function go(p, i) { page = p; if (i != null) pi = i; if (p === 'sources' && srcCache) srcCache.sig = null; render(); window.scrollTo(0, 0); }
 function rail() {
   const brand = h('div', { class: 'brand' });
   // 两条线汇成一条：合并
@@ -489,6 +506,7 @@ function saveControls() {
 function render() {
   if (page === 'group' && !cur()) page = 'sources'; // 没有订阅组时没有可显示的工作区
   marks = []; jumpEl = null; markDirty();
+  if (page !== 'group' || tab !== 'preview') previewFor = null;
   const body = page === 'group' ? groupPage() : page === 'sources' ? sourcesPage() : settingsPage();
   app.replaceChildren(h('div', { class: 'shell' }, rail(), h('main', {}, body)));
   if (!jumpTo) return;
@@ -509,12 +527,29 @@ function groupPage() {
     h('div', { class: 'ws-head' },
       h('div', { class: 'ws-top' }, title,
         h('button', { disabled: !p.token, title: p.token ? null : '保存修改后生成订阅链接', onclick: () => copyText(subLink(p), '已复制订阅链接') }, '复制订阅链接'),
+        h('button', { disabled: !p.token, title: p.token ? null : '保存修改后才能下载', onclick: () => downloadProfile(p) }, '下载配置文件'),
         saveControls()),
       h('div', { class: 'tabs', role: 'tablist' }, GROUP_TABS.map(([id, name, count]) =>
         h('button', { class: tab === id ? 'on' : '', role: 'tab', 'aria-selected': String(tab === id), onclick: () => { tab = id; render(); } },
           name, count && h('span', { class: 'n' }, count(p)), dot(e => e.pid === p.id && e.tab === id))))),
     h('div', { class: 'content' }, views[tab](p)),
   ];
+}
+
+// 下载订阅链接现在会输出的内容：按已保存的配置、和客户端拉取同样的缓存规则生成（不记访问记录）。
+// 有未保存的修改时下载的也是保存前的版本，和订阅链接一致
+async function downloadProfile(p) {
+  const i = saved.profiles.findIndex(x => x.id === p.id);
+  if (i < 0 || busy) return;
+  busy = true; toast('正在生成…');
+  try {
+    const res = await api('POST', '/api/preview', { config: saved, profile: i });
+    const sp = saved.profiles[i];
+    saveFile(sp.fileName.trim() || sp.name, res.yaml);
+    toast(dirty ? '已下载，不含未保存的修改' : '已下载');
+  } catch (err) { toast('生成失败：' + err.message); }
+  try { srcStatus = await api('GET', '/api/source-status'); } catch { /* 状态只是辅助信息 */ }
+  busy = false;
 }
 
 // 来源本身的表单项（名称、链接等）。来源是全局的：改了之后引用它的订阅组都跟着变，所以来源只在「节点来源」页新建和修改
@@ -533,7 +568,7 @@ const blankSource = kind => ({ id: newID(), kind, name: kind === 'manual' ? '手
 const blankRef = s => ({ source: s.id, enabled: true, prefix: '', include: '', exclude: '', dialer: '' });
 
 // ---------- 来源的拉取状态 ----------
-// srcStatus 里是服务端记下的、各来源最近一次实际请求上游的结果，不用生成预览也能看到上游是否正常
+// srcStatus 里是服务端记下的、各来源最近一次实际请求上游的结果，不用打开预览也能看到上游是否正常
 const ago = t => { const m = Math.round((Date.now() - new Date(t)) / 6e4); return m < 1 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.round(m / 60)} 小时前` : `${Math.round(m / 1440)} 天前`; };
 const fmtTime = t => new Date(t).toLocaleString('zh-CN', { hour12: false });
 function fmtBytes(n) {
@@ -653,68 +688,74 @@ function fmtDur(ms) {
   return hr < 24 ? `${hr} 小时 ${m % 60} 分钟` : `${Math.floor(hr / 24)} 天 ${hr % 24} 小时`;
 }
 
-// 预览里每个来源用的缓存：创建时间、过期时间和剩余时间（按服务端时钟换算）
-function cacheCell(s, preview) {
-  if (!s.fetchedAt || s.fetchedAt.startsWith('0001')) return s.noCache ? '—' : '不适用';
-  const left = Date.parse(s.expiresAt) - (Date.now() - preview.skew);
-  return h('div', { style: 'white-space:nowrap' },
-    h('div', {}, '创建 ' + fmtTime(s.fetchedAt)),
-    h('div', { class: left > 0 ? 'hint' : 'hint warn', style: 'margin:0' }, `过期 ${fmtTime(s.expiresAt)}（` + (left > 0 ? `剩余 ${fmtDur(left)}` : `已过期 ${fmtDur(left)}`) + '）'));
-}
-
-// 打开预览时如果还没有结果，就只用已有缓存生成一次（不请求上游）；底板没有缓存则保持「还没有预览」
-async function loadCachedPreview(p) {
-  const id = p.id, pending = { loading: true };
-  previews[id] = pending;
+// 预览按页面上当前的配置（可能还没保存）生成。每次进入预览页都只用已有缓存重新生成一次（不请求上游）；
+// fetch 为真时按正常流程拉取（缓存过期或没有缓存的来源会请求上游），用于补上缺少的缓存。
+// 生成期间旧结果继续显示，展开状态按「下标 + 来源 ID」带到新结果上
+let previewFor = null;   // 本次进入预览页后已经生成过预览的订阅组 ID，离开预览页时清空
+const previewSeq = {};   // 订阅组 ID → 最近一次请求的序号，只采用最后一次请求的结果
+async function loadPreview(p, fetch) {
+  const id = p.id, seq = (previewSeq[id] || 0) + 1;
+  previewSeq[id] = seq;
+  if (!previews[id]) previews[id] = { loading: true };
   let res;
   try {
-    res = await api('POST', '/api/preview', { config: cfg, profile: cfg.profiles.indexOf(p), cached: true });
-    res = res.noCache ? { noCache: true } : { ...res, draft: dirty, skew: Date.now() - Date.parse(res.now) };
-  } catch (err) { res = { noCache: true, cacheError: err.message }; }
-  if (previews[id] !== pending) return; // 期间已经手动生成过
+    res = await api('POST', '/api/preview', { config: cfg, profile: cfg.profiles.indexOf(p), cached: !fetch });
+    res = res.noCache ? { noCache: true } : { ...res, draft: dirty };
+  } catch (err) { res = { error: err.message }; }
+  if (previewSeq[id] !== seq) return;
+  const old = previews[id]?.subs || [];
+  for (const x of res.subs || []) if (old.some(o => o.index === x.index && o.id === x.id && openItems.has(o))) openItems.add(x);
   previews[id] = res;
-  if (page === 'group' && tab === 'preview' && cur().id === id) render();
+  if (page === 'group' && tab === 'preview' && cur()?.id === id) render();
+}
+// 补上缺少的缓存：拉取后重新生成
+async function fetchPreview(p) {
+  if (busy) return;
+  busy = true; toast('正在拉取…');
+  await loadPreview(p, true);
+  try { srcStatus = await api('GET', '/api/source-status'); } catch { /* 状态只是辅助信息 */ }
+  busy = false; render();
+}
+
+// 预览里一个来源的结果
+function subResult(s) {
+  if (s.noCache) return h('span', { class: 'tag' }, '没有缓存，未使用');
+  if (s.error) return h('span', { class: 'tag err', title: s.error }, (s.stale ? `失败，用缓存 ${s.used} 个：` : '失败：') + s.error);
+  return h('span', { class: 'tag ok' }, `保留 ${s.used} / ${s.count} 个节点` + (s.hosts ? `，hosts ${s.hosts} 条` : ''));
+}
+// 经过「只保留 / 排除」之后，来源里的节点哪些留下（显示输出里的名字，悬停看原名）、哪些被过滤掉
+function nodeChanges(s) {
+  const nodes = s.nodes || [], kept = nodes.filter(n => n.out), dropped = nodes.filter(n => !n.out);
+  if (nodes.length === 0) return h('p', { class: 'hint', style: 'margin:0' }, '没有节点');
+  return [
+    h('div', { class: 'sublabel' }, `保留 ${kept.length} 个`),
+    h('div', { class: 'nodes' }, kept.map(n => h('span', { class: 'chip', title: n.out !== n.name ? '原名：' + n.name : null }, n.out))),
+    dropped.length > 0 && [
+      h('div', { class: 'sublabel' }, `过滤掉 ${dropped.length} 个`),
+      h('div', { class: 'nodes' }, dropped.map(n => h('span', { class: 'chip drop' }, n.name))),
+    ],
+  ];
 }
 
 function tabPreview(p) {
   const preview = previews[p.id];
-  if (!preview) setTimeout(() => { if (!previews[p.id]) loadCachedPreview(p); });
-  const run = async refresh => {
-    if (busy) return;
-    busy = true; toast('正在生成…');
-    const id = p.id;
-    try {
-      // 把页面上现在的配置整份带过去，服务端只用它生成，不保存
-      const res = await api('POST', '/api/preview', { config: cfg, profile: cfg.profiles.indexOf(p), refresh });
-      previews[id] = { ...res, draft: dirty, skew: Date.now() - Date.parse(res.now) };
-      toast(`生成成功，共 ${res.total} 个节点`);
-    } catch (err) { previews[id] = { error: err.message }; toast('生成失败'); }
-    try { srcStatus = await api('GET', '/api/source-status'); } catch { /* 状态只是辅助信息 */ }
-    busy = false; render();
-  };
-  return [
-    h('div', { class: 'row', style: 'margin-bottom:16px' },
-      h('button', { class: 'primary', onclick: () => run(false) }, '生成预览'),
-      h('button', { onclick: () => run(true) }, '跳过缓存重新拉取')),
-    !preview || preview.loading ? empty('正在读取缓存…')
-      : preview.noCache ? empty('还没有预览', preview.cacheError && `用缓存生成失败：${preview.cacheError}`)
-      : preview.error ? h('div', { class: 'warnbox' }, '生成失败：' + preview.error) : [
+  if (previewFor !== p.id || !preview) { previewFor = p.id; setTimeout(() => loadPreview(p)); }
+  const fetchBtn = label => h('button', { class: 'sm', disabled: busy, onclick: () => fetchPreview(p) }, label);
+  const missing = (preview?.subs || []).filter(x => x.noCache);
+  return !preview || preview.loading ? empty('正在生成…')
+    : preview.noCache ? h('div', { class: 'empty' }, h('b', {}, '底板还没有缓存'), fetchBtn('拉取并生成'))
+    : preview.error ? h('div', { class: 'warnbox' }, '生成失败：' + preview.error) : [
+      missing.length > 0 && h('div', { class: 'warnbox row' }, h('span', { style: 'margin-right:auto' }, `${quote(missing)}还没有缓存，未并入`), fetchBtn('拉取')),
       preview.draft && dirty && h('div', { class: 'warnbox' }, '包含未保存的修改'),
-      preview.subs.length > 0 && h('div', { class: 'card' }, h('div', { class: 'tblwrap' }, h('table', {},
-        h('tr', {}, ['节点来源', '结果', '缓存', '使用的 UA', '使用的链接'].map(t => h('th', {}, t))),
-        preview.subs.map(s => h('tr', {},
-          h('td', {}, s.name, s.base && h('span', { class: 'chip base', style: 'margin-left:6px' }, '底板')),
-          h('td', {}, s.noCache ? h('span', { class: 'tag' }, '没有缓存，未使用')
-            : s.error ? h('span', { class: 'tag err', title: s.error }, (s.stale ? `失败，用缓存 ${s.used} 个：` : '失败：') + s.error) : h('span', { class: 'tag ok' }, `${s.used} / ${s.count} 个节点` + (s.hosts ? `，hosts ${s.hosts} 条` : ''))),
-          h('td', {}, cacheCell(s, preview)),
-          h('td', { class: 'clip', title: s.ua }, s.ua || '不适用'),
-          h('td', { class: 'clip', title: s.url }, s.url || '不适用')))))),
+      preview.subs.length > 0 && h('div', { class: 'list' }, preview.subs.map(s => item(s, {
+        name: s.name, chips: [s.base && ['底板', 'base']], status: subResult(s),
+        body: () => nodeChanges(s),
+      }))),
       preview.warnings.length > 0 && h('div', { class: 'warnbox' }, preview.warnings.map(w => h('div', {}, w))),
       h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'hint', style: 'margin:0 auto 0 0' }, `共 ${preview.total} 个节点、${preview.groups} 个策略组、${preview.rules} 条规则`),
         h('button', { class: 'sm', onclick: () => copyText(preview.yaml, '已复制配置内容') }, '复制配置内容')),
       h('pre', {}, preview.yaml),
-    ],
-  ];
+    ];
 }
 
 async function loadAccess(id) {
@@ -766,8 +807,72 @@ function tabMore(p) {
 }
 
 // ---------- 节点来源 ----------
+// 缓存键取决于链接、解锁地址和全局的 UA，这些变了就要重新读取缓存信息
+const cacheSig = () => JSON.stringify([cfg.userAgent, cfg.unlockUserAgent, cfg.cacheMinutes, cfg.sources.map(s => [s.id, s.kind, s.url, s.unlockUrl])]);
+// 读取各来源按页面上当前设置（可能还没保存）对应的缓存；带 source 时先跳过缓存重新拉取它。返回服务端的结果
+async function loadSourceCache(source) {
+  const sig = cacheSig();
+  try {
+    const res = await api('POST', '/api/source-cache', { config: cfg, source });
+    srcCache = { sig, caches: res.caches, skew: Date.now() - Date.parse(res.now) };
+    return res;
+  } catch (err) {
+    if (!source) srcCache = { sig, caches: {}, error: err.message };
+    throw err;
+  } finally {
+    if (page === 'sources') render();
+  }
+}
+// 面板里的时间：今天的只显示时刻，其他显示月 / 日；悬停看完整时间
+function shortTime(t) {
+  const d = new Date(t), now = new Date();
+  const hm = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return d.toDateString() === now.toDateString() ? '今天 ' + hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+const fact = (label, value, o = {}) => h('div', { class: 'fact' }, h('small', {}, label), h('span', { class: o.class, title: o.title }, value));
+// 来源展开后的信息面板：缓存（节点数、拉取和过期时间、剩余时间，按服务端时钟换算）、使用它的订阅组；远程来源带刷新、下载按钮
+function sourceFacts(s, users) {
+  const c = srcCache?.caches[s.id];
+  let cache = [];
+  if (s.kind === 'remote') {
+    if (srcCache.loading && !c) cache = fact('缓存', '读取中…', { class: 'muted' });
+    else if (srcCache.error) cache = fact('缓存', '读取失败：' + srcCache.error, { class: 'warn', title: srcCache.error });
+    else if (!c) cache = fact('缓存', '还没有', { class: 'muted' });
+    else {
+      const left = Date.parse(c.expiresAt) - (Date.now() - srcCache.skew);
+      cache = [
+        fact('缓存节点', `${c.count} 个`),
+        fact('拉取于', shortTime(c.fetchedAt), { title: fmtTime(c.fetchedAt) }),
+        fact('过期于', shortTime(c.expiresAt), { title: fmtTime(c.expiresAt) }),
+        left > 0 ? fact('剩余', fmtDur(left)) : fact('状态', `已过期 ${fmtDur(left)}`, { class: 'warn' }),
+      ];
+    }
+  }
+  return h('div', { class: 'facts' }, cache,
+    fact('使用它的订阅组', users.length > 0 ? users.map(p => p.name || '(未命名)').join('、') : '未被使用', { class: users.length > 0 ? null : 'muted' }),
+    s.kind === 'remote' && h('div', { class: 'acts' },
+      h('button', { class: 'sm', disabled: !s.url.trim(), onclick: () => refreshCache(s) }, '刷新缓存'),
+      h('button', { class: 'sm', disabled: !c, onclick: () => downloadCache(s) }, '下载配置文件')));
+}
+async function refreshCache(s) {
+  if (busy) return;
+  busy = true; toast('正在拉取…');
+  try {
+    const res = await loadSourceCache(s.id);
+    toast(res.error ? '刷新失败：' + res.error : `已刷新，共 ${res.caches[s.id]?.count ?? 0} 个节点`);
+  } catch (err) { toast(err.message); }
+  try { srcStatus = await api('GET', '/api/source-status'); } catch { /* 状态只是辅助信息 */ }
+  busy = false; render();
+}
+async function downloadCache(s) {
+  try {
+    const { yaml } = await api('POST', '/api/source-download', { config: cfg, source: s.id });
+    saveFile(s.name, yaml);
+  } catch (err) { toast(err.message); }
+}
 function sourcesPage() {
   const add = kind => { const s = blankSource(kind); cfg.sources.push(s); openItems.add(s); markDirty(); render(); };
+  if (srcCache?.sig !== cacheSig()) { srcCache = { caches: {}, ...srcCache, sig: cacheSig(), loading: true }; setTimeout(() => loadSourceCache().catch(() => {})); }
   return [
     h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '节点来源'), saveControls())),
     h('div', { class: 'content' },
@@ -784,7 +889,7 @@ function sourcesPage() {
               markDirty(); render();
             } }, '删除'),
             body: nameEl => [
-              users.length > 0 && h('div', { class: 'sublabel' }, `使用它的订阅组：${quote(users)}`),
+              sourceFacts(s, users),
               h('div', { class: 'grid' }, sourceFields(s, v => { nameEl.textContent = v || '(未命名)'; })),
             ],
           });

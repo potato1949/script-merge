@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func newTestApp(t *testing.T) (a *App, do func(method, path, body string, edit ...func(*http.Request)) *httptest.ResponseRecorder) {
@@ -192,6 +194,9 @@ func TestPreviewUnsavedAndSourceStatus(t *testing.T) {
 	if res.Total != 1 || !strings.Contains(res.YAML, "name: a") || strings.Contains(res.YAML, "name: b") {
 		t.Errorf("预览应按未保存的配置生成: 共 %d 个节点\n%s", res.Total, res.YAML)
 	}
+	if want := []NodeChange{{Name: "a", Out: "a"}, {Name: "b"}}; len(res.Subs) != 1 || !reflect.DeepEqual(res.Subs[0].Nodes, want) {
+		t.Errorf("节点的去向应按上游顺序列出，被排除的没有输出名: %+v", res.Subs)
+	}
 	after := a.store.Config()
 	if len(after.Profiles) != len(before.Profiles) || len(after.Sources) != len(before.Sources) || after.Revision != before.Revision {
 		t.Errorf("预览不应保存配置: %d 个订阅组、%d 个来源、版本 %d", len(after.Profiles), len(after.Sources), after.Revision)
@@ -238,7 +243,6 @@ func TestPreviewCachedOnly(t *testing.T) {
 		NoCache bool
 		Cached  bool
 		Total   int
-		Now     time.Time
 		Subs    []SubStatus
 	}
 	preview := func(extra map[string]any) result {
@@ -259,13 +263,13 @@ func TestPreviewCachedOnly(t *testing.T) {
 	draft.Profiles[0].Sources[1].Enabled = true
 	n := hits.Load()
 	res := preview(map[string]any{"cached": true})
-	if hits.Load() != n || !res.Cached || res.NoCache || res.Total != 1 || res.Now.IsZero() || len(res.Subs) != 2 {
+	if hits.Load() != n || !res.Cached || res.NoCache || res.Total != 1 || len(res.Subs) != 2 {
 		t.Fatalf("有缓存时应直接用缓存生成: %+v，请求 %d 次", res, hits.Load()-n)
 	}
-	if s := res.Subs[0]; s.FetchedAt.IsZero() || !s.ExpiresAt.Equal(s.FetchedAt.Add(30*time.Minute)) || s.NoCache {
-		t.Errorf("底板的缓存时间: %+v", s)
+	if s := res.Subs[0]; s.NoCache || s.Count != 1 {
+		t.Errorf("底板应使用缓存: %+v", s)
 	}
-	if s := res.Subs[1]; !s.NoCache || s.Error != "" || !s.FetchedAt.IsZero() {
+	if s := res.Subs[1]; !s.NoCache || s.Error != "" || s.Count != 0 {
 		t.Errorf("没有缓存的来源应标记 noCache: %+v", s)
 	}
 	// 缓存时长改成 0：缓存已过期，但只用缓存时照用
@@ -283,5 +287,70 @@ func TestFormatParserAPI(t *testing.T) {
 	}
 	if w := do("POST", "/api/format-parser", `{"text":"a: [1\n"}`); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "YAML") {
 		t.Errorf("YAML 有错时应返回 400: %d %s", w.Code, w.Body)
+	}
+}
+
+// 来源的缓存：按页面上当前的设置找缓存（不请求上游）；刷新跳过缓存；下载把缓存还原成完整配置。
+func TestSourceCacheAPI(t *testing.T) {
+	var hits atomic.Int32
+	var fail atomic.Bool
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		if fail.Load() {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprint(w, "proxies:\n  - {name: a, type: http, server: 1.1.1.1, port: 80}\nproxy-groups:\n  - {name: 选择, type: select, proxies: [a]}\nrules:\n  - MATCH,选择\n")
+	}))
+	defer up.Close()
+	_, do := newTestApp(t)
+	const id, manual = "cccccccccccccccc", "dddddddddddddddd"
+	draft := Config{CacheMinutes: 30}
+	draft.Sources = []Source{{ID: id, Name: "机场", URL: up.URL}, {ID: manual, Name: "手动", Kind: "manual", Nodes: "- {name: m, type: http, server: 2.2.2.2, port: 80}"}}
+	// Parser 写错了不影响来源缓存
+	draft.Profiles = []Profile{{Name: "组", Base: id, Parser: "a: [1", Sources: []SourceRef{{Source: id}}}}
+	type result struct {
+		Caches map[string]CacheInfo
+		Now    time.Time
+		Error  string
+	}
+	call := func(path, source string) *httptest.ResponseRecorder {
+		t.Helper()
+		b, _ := json.Marshal(map[string]any{"config": draft, "source": source})
+		return do("POST", path, string(b))
+	}
+	if res := decode[result](t, call("/api/source-cache", "")); len(res.Caches) != 0 || res.Now.IsZero() || hits.Load() != 0 {
+		t.Fatalf("没有缓存时不应请求上游: %+v，请求 %d 次", res, hits.Load())
+	}
+	if w := call("/api/source-download", id); w.Code != http.StatusNotFound {
+		t.Errorf("没有缓存时下载应返回 404: %d %s", w.Code, w.Body)
+	}
+	res := decode[result](t, call("/api/source-cache", id))
+	c, ok := res.Caches[id]
+	if !ok || res.Error != "" || hits.Load() != 1 || c.Count != 1 || !c.ExpiresAt.Equal(c.FetchedAt.Add(30*time.Minute)) || len(res.Caches) != 1 {
+		t.Fatalf("刷新后的缓存: %+v，请求 %d 次", res, hits.Load())
+	}
+	if res := decode[result](t, call("/api/source-cache", "")); res.Caches[id] != c || hits.Load() != 1 {
+		t.Errorf("读取缓存不应请求上游: %+v", res)
+	}
+	got := decode[map[string]string](t, call("/api/source-download", id))["yaml"]
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(got), &doc); err != nil || len(mapsOf(doc["proxies"], true)) != 1 || len(mapsOf(doc["proxy-groups"], true)) != 1 || doc["rules"] == nil {
+		t.Errorf("下载的配置应包含节点、策略组和规则: %v\n%s", err, got)
+	}
+	// 刷新失败：带上原因，旧缓存保留
+	fail.Store(true)
+	if res := decode[result](t, call("/api/source-cache", id)); res.Error == "" || res.Caches[id] != c {
+		t.Errorf("刷新失败时应带上原因并保留旧缓存: %+v", res)
+	}
+	// 换了 UA 就是另一份缓存
+	draft.UserAgent = "other"
+	if res := decode[result](t, call("/api/source-cache", "")); len(res.Caches) != 0 {
+		t.Errorf("换了 UA 后不应沿用原来的缓存: %+v", res)
+	}
+	for _, src := range []string{manual, "eeeeeeeeeeeeeeee"} {
+		if w := call("/api/source-cache", src); w.Code != http.StatusNotFound {
+			t.Errorf("手动节点或不存在的来源应返回 404: %s %d", src, w.Code)
+		}
 	}
 }

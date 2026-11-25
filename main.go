@@ -84,6 +84,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/preview", a.auth(a.handlePreview))
 	mux.HandleFunc("POST /api/format-parser", a.auth(a.handleFormatParser))
 	mux.HandleFunc("GET /api/source-status", a.auth(a.handleSourceStatus))
+	mux.HandleFunc("POST /api/source-cache", a.auth(a.handleSourceCache))
+	mux.HandleFunc("POST /api/source-download", a.auth(a.handleSourceDownload))
 	mux.HandleFunc("GET /api/access", a.auth(a.handleGetAccess))
 	mux.HandleFunc("DELETE /api/access", a.auth(a.handleClearAccess))
 	mux.HandleFunc("GET /sub/{token}", a.handleSub)
@@ -480,12 +482,106 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// now 是服务端时间：前端据此换算缓存的剩余时间，不受浏览器时钟偏差影响
 	writeJSON(w, http.StatusOK, map[string]any{
 		"yaml": string(res.YAML), "subs": res.Subs, "warnings": res.Warnings,
 		"total": res.Total, "groups": res.Groups, "rules": res.Rules, "userinfo": res.Userinfo,
-		"cached": mode == FetchCacheOnly, "now": time.Now(),
+		"cached": mode == FetchCacheOnly,
 	})
+}
+
+// readSourceRequest 读取来源缓存接口的请求 {config, source}：和预览一样带着前端当前的配置（链接、UA 可能还没保存），
+// 只校验全局设置和节点来源（订阅组和缓存无关，比如 Parser 写错了不影响这里）。
+// source 非空时找出对应的远程来源，找不到就回 404。
+func readSourceRequest(w http.ResponseWriter, r *http.Request) (cfg Config, src *Source, ok bool) {
+	var req struct {
+		Config Config `json:"config"`
+		Source string `json:"source"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	cfg = req.Config
+	cfg.Profiles = nil
+	if err := validateConfig(&cfg, nil); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Source == "" {
+		return cfg, nil, true
+	}
+	for i := range cfg.Sources {
+		if s := &cfg.Sources[i]; s.ID == req.Source && s.Kind == "remote" {
+			return cfg, s, true
+		}
+	}
+	writeErr(w, http.StatusNotFound, "节点来源不存在")
+	return
+}
+
+// cacheOf 返回来源 s 按当前设置对应的缓存（过期的也算，不请求上游），没有就是 nil。
+func (a *App) cacheOf(cfg Config, s Source) *cacheEntry {
+	url, ua, unlockUA := fetchArgs(cfg, s)
+	if url == "" {
+		return nil
+	}
+	e, _ := a.fetcher.Get(s, url, ua, unlockUA, 0, FetchCacheOnly)
+	return e
+}
+
+// handleSourceCache 返回各远程来源按当前设置对应的缓存（来源 ID → CacheInfo，没有缓存的不出现）；
+// 带 source 时先跳过缓存重新拉取这个来源，失败的原因放在 error 里（旧缓存仍然保留）。
+// now 是服务端时间：前端据此换算缓存的剩余时间，不受浏览器时钟偏差影响。
+func (a *App) handleSourceCache(w http.ResponseWriter, r *http.Request) {
+	cfg, src, ok := readSourceRequest(w, r)
+	if !ok {
+		return
+	}
+	out := map[string]any{}
+	if src != nil {
+		url, ua, unlockUA := fetchArgs(cfg, *src)
+		if url == "" {
+			writeErr(w, http.StatusBadRequest, "没有填写订阅链接")
+			return
+		}
+		if _, err := a.fetcher.Get(*src, url, ua, unlockUA, 0, FetchRefresh); err != nil {
+			out["error"] = err.Error()
+		}
+	}
+	ttl := time.Duration(cfg.CacheMinutes) * time.Minute
+	caches := map[string]CacheInfo{}
+	for _, s := range cfg.Sources {
+		if s.Kind != "remote" {
+			continue
+		}
+		if e := a.cacheOf(cfg, s); e != nil {
+			caches[s.ID] = CacheInfo{FetchedAt: e.FetchedAt, ExpiresAt: e.FetchedAt.Add(ttl), Count: len(e.Proxies)}
+		}
+	}
+	out["caches"], out["now"] = caches, time.Now()
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleSourceDownload 把来源当前设置对应的缓存还原成一份 Clash 配置返回（{yaml}），不请求上游。
+func (a *App) handleSourceDownload(w http.ResponseWriter, r *http.Request) {
+	cfg, src, ok := readSourceRequest(w, r)
+	if !ok {
+		return
+	}
+	if src == nil {
+		writeErr(w, http.StatusBadRequest, "没有指定节点来源")
+		return
+	}
+	e := a.cacheOf(cfg, *src)
+	if e == nil {
+		writeErr(w, http.StatusNotFound, "这个来源还没有缓存，先刷新缓存")
+		return
+	}
+	b, err := encodeYAML(e.config())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"yaml": string(b)})
 }
 
 // handleSourceStatus 返回各节点来源最近一次实际拉取上游的结果（来源 ID → SourceState）。
