@@ -65,7 +65,7 @@ func TestOldConfigReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := s.Config()
-	if c.Version != configVersion || len(c.Profiles) != 1 || c.Profiles[0].Token == "t1" || !s.HasPassword() {
+	if c.Version != configVersion || len(c.Profiles) != 0 || !s.HasPassword() {
 		t.Errorf("旧配置应作废、密码保留: %+v", c)
 	}
 	if b, err := os.ReadFile(filepath.Join(dir, "config.json.bak")); err != nil || string(b) != old {
@@ -77,8 +77,18 @@ func TestOldConfigReset(t *testing.T) {
 	}
 }
 
+// testConfig：默认配置（没有订阅组）加一个空的订阅组。
+func testConfig() Config {
+	c := defaultConfig()
+	c.Profiles = []Profile{{ID: randHex(8), Name: "测试", Sources: []SourceRef{}}}
+	return c
+}
+
 func TestValidateSourcesAndRefs(t *testing.T) {
-	cfg := defaultConfig()
+	if empty := defaultConfig(); validateConfig(&empty, nil) != nil {
+		t.Error("没有订阅组的配置应当可以保存")
+	}
+	cfg := testConfig()
 	cfg.Sources = []Source{
 		{ID: "aaaaaaaaaaaaaaaa", Name: "A", URL: "https://a.example/s"},
 		{ID: "not-a-valid-id", Name: "B", Kind: "manual", Nodes: "- {name: x, type: http, server: 1.1.1.1, port: 80}", URL: "https://leftover.example"},
@@ -127,7 +137,7 @@ func TestSaveConflict(t *testing.T) {
 		return do("PUT", "/api/config"+query, string(b))
 	}
 	first := a.store.Config()
-	first.Profiles[0].Name = "甲"
+	first.Profiles = []Profile{{Name: "甲"}}
 	saved := decode[Config](t, put(first, ""))
 	if saved.Revision != first.Revision+1 {
 		t.Fatalf("保存后版本号应加一: %d → %d", first.Revision, saved.Revision)

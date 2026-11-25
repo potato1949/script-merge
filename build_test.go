@@ -112,7 +112,7 @@ func TestBuildEndToEnd(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := defaultConfig()
+	cfg := testConfig()
 	cfg.UserAgent = "clash.meta"
 	p := &cfg.Profiles[0]
 	addSource(&cfg, p, Source{ID: "bbbbbbbbbbbbbbbb", Name: "其他", URL: upstream.URL + "/other"}, SourceRef{Enabled: true})
@@ -249,7 +249,7 @@ func TestBuildBaseErrors(t *testing.T) {
 	defer srv.Close()
 	build := func(base string, edit func(*Config, *Profile)) error {
 		t.Helper()
-		cfg := defaultConfig()
+		cfg := testConfig()
 		p := &cfg.Profiles[0]
 		addSource(&cfg, p, Source{ID: "aaaaaaaaaaaaaaaa", Name: "A", URL: srv.URL + base}, SourceRef{Enabled: true})
 		addSource(&cfg, p, Source{ID: "bbbbbbbbbbbbbbbb", Kind: "manual", Name: "M", Nodes: "- {name: x, type: http, server: 1.1.1.1, port: 80}"}, SourceRef{Enabled: true})
@@ -285,7 +285,7 @@ func TestFetchUsesProxy(t *testing.T) {
 	proxyHits.Lock()
 	proxyHits.urls = nil // -count=N 时每轮重新计
 	proxyHits.Unlock()
-	cfg := defaultConfig()
+	cfg := testConfig()
 	p := &cfg.Profiles[0]
 	addSource(&cfg, p, Source{ID: "aaaaaaaaaaaaaaaa", Name: "经代理", URL: "http://upstream.test/sub", UnlockURL: "http://upstream.test/unlock"}, SourceRef{Enabled: true})
 	p.Base = "aaaaaaaaaaaaaaaa"
@@ -315,7 +315,7 @@ rules:
 `)
 	}))
 	defer srv.Close()
-	cfg := defaultConfig()
+	cfg := testConfig()
 	p := &cfg.Profiles[0]
 	addSource(&cfg, p, Source{ID: "aaaaaaaaaaaaaaaa", Name: "机场", URL: srv.URL}, SourceRef{Enabled: true})
 	addSource(&cfg, p, Source{ID: "bbbbbbbbbbbbbbbb", Kind: "manual", Name: "家宽",

@@ -263,8 +263,8 @@ func (a *App) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 // validateConfig 校验并规范化前端提交的配置。tokens 是现有订阅组 ID → 令牌。
 func validateConfig(c *Config, tokens map[string]string) error {
 	c.Version = configVersion
-	if len(c.Profiles) == 0 {
-		return errors.New("至少需要保留一个订阅组")
+	if c.Profiles == nil {
+		c.Profiles = []Profile{}
 	}
 	for _, ua := range []*string{&c.UserAgent, &c.UnlockUserAgent} {
 		*ua = strings.TrimSpace(*ua)

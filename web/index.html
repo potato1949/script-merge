@@ -324,7 +324,7 @@ function normalize(c) {
     p.sources = (p.sources || []).filter(r => ids.has(r.source));
     for (const r of p.sources) for (const k of ['prefix', 'include', 'exclude', 'dialer']) r[k] ||= '';
   }
-  pi = Math.min(pi, c.profiles.length - 1);
+  pi = Math.max(0, Math.min(pi, c.profiles.length - 1));
   return c;
 }
 async function boot() {
@@ -388,6 +388,7 @@ function saveControls() {
   return [d, h('button', { id: 'save', class: 'primary', disabled: !dirty, onclick: save }, '保存修改')];
 }
 function render() {
+  if (page === 'group' && !cur()) page = 'sources'; // 没有订阅组时没有可显示的工作区
   const body = page === 'group' ? groupPage() : page === 'sources' ? sourcesPage() : settingsPage();
   app.replaceChildren(h('div', { class: 'shell' }, rail(), h('main', {}, body)));
 }
@@ -656,8 +657,7 @@ function tabMore(p) {
           const c = clone(p); c.id = newID(); c.token = ''; c.name = p.name + ' 副本';
           cfg.profiles.push(c); markDirty(); tab = 'subs'; go('group', cfg.profiles.length - 1);
         } }, '复制这个订阅组'),
-        h('button', { class: 'danger', disabled: cfg.profiles.length < 2, title: cfg.profiles.length < 2 ? '至少保留一个订阅组' : null,
-          onclick: () => { if (!confirm(`删除订阅组「${p.name}」？`)) return; cfg.profiles.splice(pi, 1); pi = Math.max(0, pi - 1); tab = 'subs'; markDirty(); render(); } }, '删除这个订阅组'))),
+        h('button', { class: 'danger', onclick:() => { if (!confirm(`删除订阅组「${p.name}」？`)) return; cfg.profiles.splice(pi, 1); pi = Math.max(0, pi - 1); tab = 'subs'; markDirty(); render(); } }, '删除这个订阅组'))),
   ];
 }
 

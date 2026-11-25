@@ -23,9 +23,10 @@ proxy-groups:
 	a, do := newTestApp(t)
 	cfg := a.store.Config()
 	cfg.Sources = []Source{{ID: "aaaaaaaaaaaaaaaa", Name: "机场", URL: up.URL}}
-	cfg.Profiles[0].Sources = []SourceRef{{Source: "aaaaaaaaaaaaaaaa", Enabled: true}}
-	cfg.Profiles[0].Base = "aaaaaaaaaaaaaaaa"
-	cfg.Profiles = append(cfg.Profiles, Profile{Name: "没有底板"})
+	cfg.Profiles = []Profile{
+		{Name: "机场", Base: "aaaaaaaaaaaaaaaa", Sources: []SourceRef{{Source: "aaaaaaaaaaaaaaaa", Enabled: true}}},
+		{Name: "没有底板"},
+	}
 	body, _ := json.Marshal(cfg)
 	cfg = decode[Config](t, do("PUT", "/api/config", string(body)))
 	p, empty := cfg.Profiles[0], cfg.Profiles[1]

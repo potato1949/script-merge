@@ -204,10 +204,8 @@ func (s *Store) CheckPassword(password string) bool {
 
 func defaultConfig() Config {
 	return Config{
-		Version: configVersion,
-		Profiles: []Profile{{
-			ID: randHex(8), Name: "默认", Token: randHex(16), FileName: "merged", Sources: []SourceRef{},
-		}},
+		Version:        configVersion,
+		Profiles:       []Profile{},
 		Sources:        []Source{},
 		CacheMinutes:   5,
 		UpdateInterval: 12,
