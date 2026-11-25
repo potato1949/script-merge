@@ -66,6 +66,7 @@ type ProxyGroup struct {
 	Name   string   `json:"name"`
 	Groups []string `json:"groups"` // 底板的策略组名
 	Filter string   `json:"filter"` // 节点名正则，匹配输出里的名字（加了前缀、重名加了序号的）；空则不加节点
+	Icon   string   `json:"icon"`   // 图标链接，输出为策略组的 icon 字段（mihomo 系客户端显示）；空则不输出
 }
 
 type Config struct {

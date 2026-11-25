@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -69,14 +70,18 @@ func addGroups(defs []ProxyGroup, groups []any, nodes []string) (out []any, stat
 		for i, m := range st.Members {
 			members[i] = m
 		}
-		groups = append(groups, map[string]any{"name": d.Name, "type": "select", "proxies": members})
+		g := map[string]any{"name": d.Name, "type": "select", "proxies": members}
+		if d.Icon != "" {
+			g["icon"] = d.Icon
+		}
+		groups = append(groups, g)
 		stats = append(stats, st)
 	}
 	return groups, stats, warns
 }
 
 // normalizeGroups 规范化订阅组追加的策略组：ID 格式不对或重复的重新生成，组名去掉首尾空白且不能为空、不能重复、
-// 不能是 DIRECT 这类内置策略，选用的底板策略组去掉空的和重复的。
+// 不能是 DIRECT 这类内置策略，图标链接只接受 http(s)，选用的底板策略组去掉空的和重复的。
 func normalizeGroups(p *Profile) error {
 	ids, names := map[string]bool{}, map[string]bool{}
 	if p.Groups == nil {
@@ -88,7 +93,7 @@ func normalizeGroups(p *Profile) error {
 			g.ID = randHex(8)
 		}
 		ids[g.ID] = true
-		g.Name = strings.TrimSpace(g.Name)
+		g.Name, g.Icon = strings.TrimSpace(g.Name), strings.TrimSpace(g.Icon)
 		switch {
 		case g.Name == "":
 			return fmt.Errorf("订阅组「%s」的第 %d 个新增策略组没有填名称", p.Name, i+1)
@@ -98,6 +103,9 @@ func normalizeGroups(p *Profile) error {
 			return fmt.Errorf("订阅组「%s」里有重名的新增策略组「%s」", p.Name, g.Name)
 		}
 		names[g.Name] = true
+		if u, err := url.Parse(g.Icon); g.Icon != "" && (err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "") {
+			return fmt.Errorf("订阅组「%s」的新增策略组「%s」的图标链接必须以 http:// 或 https:// 开头", p.Name, g.Name)
+		}
 		seen, list := map[string]bool{}, []string{}
 		for _, n := range g.Groups {
 			if n = strings.TrimSpace(n); n != "" && !seen[n] {

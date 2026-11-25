@@ -75,6 +75,8 @@ input.changed, textarea.changed { box-shadow: inset 3px 0 0 var(--accent); }
 .checks.changed { box-shadow: inset 3px 0 0 var(--accent); }
 .checks .ord { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 600; }
 .checks .none { color: var(--muted); }
+/* 新增策略组行首的图标：没有图标时也占位，各行的名称对齐 */
+.gicon { width: 20px; height: 20px; object-fit: contain; display: block; }
 .seg { display: inline-flex; align-self: flex-start; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 10px; background: var(--sunken); }
 .seg button { border: 0; border-radius: 7px; background: none; color: var(--muted); padding: 5px 8px; } /* 3px + 8px：文字和输入框里的文字对齐 */
 .seg button:hover { color: var(--text); }
@@ -405,7 +407,7 @@ function normalize(c) {
     p.sources = (p.sources || []).filter(r => ids.has(r.source));
     for (const r of p.sources) for (const k of ['prefix', 'include', 'exclude', 'dialer']) r[k] ||= '';
     p.groups ||= [];
-    for (const g of p.groups) { g.id ||= newID(); g.name ||= ''; g.groups ||= []; g.filter ||= ''; }
+    for (const g of p.groups) { g.id ||= newID(); g.name ||= ''; g.groups ||= []; g.filter ||= ''; g.icon ||= ''; }
   }
   pi = Math.max(0, Math.min(pi, c.profiles.length - 1));
   return c;
@@ -447,7 +449,7 @@ async function save() {
 //   obj / key：改的是哪个对象的哪个字段（行上的圆点、输入框的标记）；删掉的东西没有 obj
 //   where / what / from / to：清单里显示的文字，多行文本不列新旧值
 const PROFILE_FIELDS = [['name', '名称'], ['base', '底板', { tab: 'subs' }], ['parser', 'Parser', { tab: 'parser', long: true }], ['fileName', '显示名称', { tab: 'more' }]];
-const GROUP_FIELDS = [['name', '名称'], ['filter', '节点正则']];
+const GROUP_FIELDS = [['name', '名称'], ['filter', '节点正则'], ['icon', '图标链接']];
 const REF_FIELDS = [['enabled', '启用'], ['prefix', '节点名前缀'], ['include', '只保留'], ['exclude', '排除'], ['dialer', '前置代理']];
 const SOURCE_FIELDS = [['name', '名称'], ['url', '订阅链接'], ['unlockUrl', '解锁地址'], ['nodes', '节点', { long: true }]];
 const GLOBAL_FIELDS = [['cacheMinutes', '缓存时间'], ['updateInterval', '建议客户端更新间隔'], ['userAgent', '拉取订阅用的 UA'], ['followUA', '拉取 UA 的方式'], ['unlockUserAgent', '解锁 UA']];
@@ -729,14 +731,15 @@ function tabGroups(p) {
   return [
     p.groups.length === 0 ? empty('还没有新增的策略组')
       : h('div', { class: 'list' }, p.groups.map((g, i) => {
-        const st = results.find(x => x.id === g.id);
+        const st = results.find(x => x.id === g.id), icon = groupIcon(g.icon);
         return item(g, {
-          name: g.name, status: st && groupResult(st),
+          name: g.name, lead: icon, status: st && groupResult(st),
           controls: listButtons(p.groups, i),
           body: nameEl => [
             h('div', { class: 'grid' },
               field('名称', g, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
               field('节点（正则，匹配加了前缀的节点名，可选）', g, 'filter', { placeholder: '例：^家宽|香港' }),
+              field('图标链接（可选）', g, 'icon', { wide: true, placeholder: 'https://…/icon.png', onchange: icon.show }),
               groupPicker(p, g)),
           ],
         });
@@ -763,6 +766,13 @@ function groupPicker(p, g) {
     rows.length > 0 ? rows.map(r => r.el) : h('span', { class: 'none' }, !p.base ? '还没有选择底板' : '底板还没有拉取过，没有可选的策略组'));
   track(box, g, 'groups');
   return h('div', { class: 'ua-field wide' }, h('span', { class: 'lbl' }, '底板策略组（可选）'), box);
+}
+// 行首的图标预览：show(链接) 在输入时更新；没有图标或加载失败时隐藏但保留位置
+function groupIcon(src) {
+  const img = h('img', { class: 'gicon', alt: '', onerror: () => { img.style.visibility = 'hidden'; } });
+  img.show = v => { v = v.trim(); img.style.visibility = /^https?:\/\/./.test(v) ? 'visible' : 'hidden'; if (img.style.visibility === 'visible') img.src = v; else img.removeAttribute('src'); };
+  img.show(src);
+  return img;
 }
 // 一个新增策略组在预览里的结果
 function groupResult(st) {

@@ -31,7 +31,7 @@ rules:
 		SourceRef{Enabled: true, Prefix: "家宽 "})
 	p.Base = "aaaaaaaaaaaaaaaa"
 	p.Groups = []ProxyGroup{
-		{ID: "1111111111111111", Name: "自建", Groups: []string{"自动", "改了名的组", "全部"}, Filter: "^家宽"},
+		{ID: "1111111111111111", Name: "自建", Groups: []string{"自动", "改了名的组", "全部"}, Filter: "^家宽", Icon: " https://icons.example/home.png "},
 		{ID: "2222222222222222", Name: "全部", Filter: "."},
 		{ID: "3333333333333333", Name: "香港 01"},
 		{ID: "4444444444444444", Name: "正则写错", Filter: "("},
@@ -62,6 +62,10 @@ rules:
 	// 底板策略组按选择的顺序在前，节点按输出顺序在后
 	if want := []string{"自动", "全部", "家宽 落地 A", "家宽 落地 B"}; !reflect.DeepEqual(groups["自建"], want) {
 		t.Errorf("自建 = %q", groups["自建"])
+	}
+	// 填了图标链接的输出 icon（保存时去掉首尾空白），没填的不输出
+	if !strings.Contains(string(res.YAML), "icon: https://icons.example/home.png") || strings.Count(string(res.YAML), "icon:") != 1 {
+		t.Errorf("图标链接输出不对:\n%s", res.YAML)
 	}
 	if want := []string{"DIRECT"}; !reflect.DeepEqual(groups["正则写错"], want) {
 		t.Errorf("正则写错 = %q", groups["正则写错"])
@@ -110,4 +114,8 @@ func TestNormalizeGroups(t *testing.T) {
 	check([]ProxyGroup{{Name: " "}}, "没有填名称")
 	check([]ProxyGroup{{Name: "DIRECT"}}, "不能叫「DIRECT」")
 	check([]ProxyGroup{{Name: "A"}, {Name: "A "}}, "重名")
+	check([]ProxyGroup{{Name: "A", Icon: "icons/a.png"}}, "图标链接必须以 http:// 或 https:// 开头")
+	if p := check([]ProxyGroup{{Name: "A", Icon: " https://a.example/a.png "}}, ""); p.Groups[0].Icon != "https://a.example/a.png" {
+		t.Errorf("图标链接应去掉首尾空白: %q", p.Groups[0].Icon)
+	}
 }
