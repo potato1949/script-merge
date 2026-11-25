@@ -14,7 +14,7 @@ Clash 订阅合并服务：每个「订阅组」选一个机场作为**底板**�
 
 ## 方向（重要）
 
-v8 重构时用户确定**只保留底板方案**：策略组和规则只来自底板机场，不再提供策略组 / 规则编辑器、模板、第三方规则集、规则仓库、全局基础配置、UA 透传、历史版本、导出导入，也不做配置迁移。之前两套方案（自建 vs 沿用机场）叠在一起导致项目混乱，所以新需求不要再把「自己维护策略组 / 规则」加回来；微调一律靠 Parser。旧实现存档在 `archive/follow-mixed` 分支。
+v8 重构时用户确定**只保留底板方案**：策略组和规则只来自底板机场，不再提供策略组 / 规则编辑器、模板、第三方规则集、规则仓库、全局基础配置、UA 透传、历史版本、导出导入，也不做配置迁移。之前两套方案（自建 vs 沿用机场）叠在一起导致项目混乱，所以新需求不要再把「自己维护策略组 / 规则」加回来；微调一律靠 Parser。唯一的例外是订阅组可以在底板的策略组之后**追加** select 策略组（`Profile.Groups`，见 `groups.go`），它不改底板已有的组、不写规则。旧实现存档在 `archive/follow-mixed` 分支。
 
 ## 命令
 
@@ -44,12 +44,12 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 ### 术语（容易混）
 
 - **订阅组** = `Profile`：本服务的概念，一个订阅组对应一个输出链接（`/sub/{token}`）
-- **策略组**：Clash 的 proxy-group，只来自底板
+- **策略组**：Clash 的 proxy-group，来自底板，另外订阅组可以在后面追加（`Profile.Groups`）
 - **底板** = `Profile.Base`：订阅组选定的一个远程来源，输出以它的完整配置为准
 
 ### 数据模型（`store.go`）
 
-`Config` 下有 `Profiles[]`（各自带 `Base`、`Parser` 和对节点来源的引用 `Sources []SourceRef`）、全局的节点来源 `Sources[]`，以及全局的 `CacheMinutes` / `UpdateInterval` / `UserAgent`（拉取 UA）/ `FollowUA`（拉取 UA 跟随 Clash Verge Rev 版本）/ `UnlockUserAgent`（解锁 UA）。
+`Config` 下有 `Profiles[]`（各自带 `Base`、`Parser`、对节点来源的引用 `Sources []SourceRef` 和新增的策略组 `Groups []ProxyGroup`）、全局的节点来源 `Sources[]`，以及全局的 `CacheMinutes` / `UpdateInterval` / `UserAgent`（拉取 UA）/ `FollowUA`（拉取 UA 跟随 Clash Verge Rev 版本）/ `UnlockUserAgent`（解锁 UA）。
 
 - **节点来源是全局对象，订阅组只存引用**：`Source` 放属于来源本身的内容（名称、`Kind`、链接、解锁地址、手填节点），`SourceRef` 放「这个订阅组怎么用它」（启用、前缀、Include / Exclude、前置代理 `Dialer`）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次。给来源加字段时先想清楚它属于哪一边
 - `Source.Kind`：`remote`（远程订阅）或 `manual`（手填节点）；空值等同 `remote`
@@ -60,7 +60,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 `GET /sub/{token}` 和 `POST /api/preview` 调同一个 `Build(cfg, profile, fetcher, mode)`（`FetchMode`：正常 / 跳过缓存 / 只用已有缓存）：
 
-本组用到的来源（底板排第一）并发拉取 → 底板拿不到或没有策略组就报错 → `root` = 底板配置去掉 proxies 的深拷贝 → 汇总节点（底板的在前；过滤 / 加前缀 / 重名加序号 / 写 dialer-proxy；非底板来源带上节点地址用到的 hosts）→ `baseGroups` 改写底板的策略组 → `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
+本组用到的来源（底板排第一）并发拉取 → 底板拿不到或没有策略组就报错 → `root` = 底板配置去掉 proxies 的深拷贝 → 汇总节点（底板的在前；过滤 / 加前缀 / 重名加序号 / 写 dialer-proxy；非底板来源带上节点地址用到的 hosts）→ `baseGroups` 改写底板的策略组 → `addGroups` 追加本组新增的策略组 → `ApplyParser` → `validate`（只产生警告）→ `toNode` 输出 YAML。
 
 - **预览不保存**：`POST /api/preview` 的请求体带着前端当前的整份 `cfg`（可能还没保存）和订阅组下标，服务端先过 `validateConfig` 再 `Build`，不落盘。「先预览、满意再保存」是界面的基本流程，不要让预览依赖已保存的配置
 - **底板原样保留**：规则、`rule-providers`、`proxy-providers`、DNS、hosts 都不动。`baseGroups`（`upstream.go`）只把成员里的底板节点名换成输出名、去掉被过滤的；包含底板全部节点的组追加其他来源的节点；`use` / `include-all` / `filter` 原样保留
@@ -101,7 +101,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 前端（`web/index.html`）
 
-原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`saved`、`changes` / `dirty`、`page`、`pi`、`tab`、`srcStatus`、`uaVer`、`previews`、`accessLog`）。页面：订阅组（标签页：节点来源 / Parser / 预览 / 本组设置）、节点来源、全局设置。
+原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`saved`、`changes` / `dirty`、`page`、`pi`、`tab`、`srcStatus`、`uaVer`、`previews`、`accessLog`）。页面：订阅组（标签页：节点来源 / 策略组 / Parser / 预览 / 本组设置）、节点来源、全局设置。
 
 - **未保存的修改靠对比得出**：`saved` 是最近一次从服务端拿到的配置，`markDirty()` 用 `diffConfig(cfg, saved)` 算出 `changes`，并更新渲染时用 `watch()` 登记的标记（圆点、输入框竖条、计数），不重绘。标记画在控件内侧，不向外凸出；控件里的文字要和同一列的标题、输入框文字左对齐（加分段按钮、标签页、表格这类带内边距的控件时注意）。给配置加用户可改的字段时要加进 `diffConfig` 的 `*_FIELDS`；拿到服务端返回的新配置后要同时更新 `saved`
 

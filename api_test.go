@@ -176,19 +176,18 @@ func TestPreviewUnsavedAndSourceStatus(t *testing.T) {
 	draft := a.store.Config()
 	const id = "bbbbbbbbbbbbbbbb"
 	draft.Sources = []Source{{ID: id, Name: "机场", URL: up.URL}}
-	draft.Profiles = append(draft.Profiles, Profile{Name: "还没保存的组", Base: id, Sources: []SourceRef{{Source: id, Enabled: true, Exclude: "b"}}})
-	preview := func(refresh bool) struct {
-		YAML  string
-		Total int
-		Subs  []SubStatus
-	} {
+	draft.Profiles = append(draft.Profiles, Profile{Name: "还没保存的组", Base: id, Sources: []SourceRef{{Source: id, Enabled: true, Exclude: "b"}},
+		Groups: []ProxyGroup{{Name: "新增", Groups: []string{"选择"}, Filter: "."}}})
+	type previewRes struct {
+		YAML      string
+		Total     int
+		Subs      []SubStatus
+		NewGroups []GroupStatus
+	}
+	preview := func(refresh bool) previewRes {
 		t.Helper()
 		b, _ := json.Marshal(map[string]any{"config": draft, "profile": len(draft.Profiles) - 1, "refresh": refresh})
-		return decode[struct {
-			YAML  string
-			Total int
-			Subs  []SubStatus
-		}](t, do("POST", "/api/preview", string(b)))
+		return decode[previewRes](t, do("POST", "/api/preview", string(b)))
 	}
 	res := preview(false)
 	if res.Total != 1 || !strings.Contains(res.YAML, "name: a") || strings.Contains(res.YAML, "name: b") {
@@ -196,6 +195,9 @@ func TestPreviewUnsavedAndSourceStatus(t *testing.T) {
 	}
 	if want := []NodeChange{{Name: "a", Out: "a"}, {Name: "b"}}; len(res.Subs) != 1 || !reflect.DeepEqual(res.Subs[0].Nodes, want) {
 		t.Errorf("节点的去向应按上游顺序列出，被排除的没有输出名: %+v", res.Subs)
+	}
+	if len(res.NewGroups) != 1 || !reflect.DeepEqual(res.NewGroups[0].Members, []string{"选择", "a"}) {
+		t.Errorf("预览应带上新增策略组的结果: %+v", res.NewGroups)
 	}
 	after := a.store.Config()
 	if len(after.Profiles) != len(before.Profiles) || len(after.Sources) != len(before.Sources) || after.Revision != before.Revision {

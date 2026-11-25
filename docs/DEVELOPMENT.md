@@ -18,6 +18,7 @@
 这个项目经历过「自建策略组 + 第三方规则集 + 模板 + 规则仓库」和「沿用机场的策略组和规则」两套方案并存的阶段，结果两套逻辑互相叠加，用起来和维护起来都很乱。v8 重构时定为**只保留底板方案**（用户的选择）：
 
 - 策略组和规则只来自底板机场，不提供策略组 / 规则编辑器、模板、规则集、规则仓库。要改就用 Parser
+- 唯一的例外是订阅组可以**追加** select 策略组（`Profile.Groups`，见「新增的策略组」）：只追加在末尾，成员是选中的底板策略组加上正则匹配的节点；不改底板已有的组，也不写规则。删除底板的策略组讨论过，要处理规则和其他组里对它的引用，暂不做（见 ROADMAP）
 - 底板的 `rule-providers` 原样输出，由客户端自己下载，服务端不平铺规则
 - 没有全局的基础配置：端口、DNS 等都用底板的，要改用 Parser 的 `mix-object`
 - 拉上游只用全局设置里的一个 UA（可以自动跟随 Clash Verge Rev 的最新版本），没有透传客户端 UA
@@ -34,6 +35,7 @@
 | `fetch.go` | 拉取上游订阅（解锁、代理）、按链接 + UA 的缓存、订阅内容解析 |
 | `build.go` | 核心流程 `Build`：底板 → 合并节点 → 策略组 → Parser → 校验 → 输出 YAML |
 | `upstream.go` | 底板策略组的改写（`baseGroups`），其他来源节点要带上的 hosts（`nodeHosts`） |
+| `groups.go` | 订阅组新增的策略组：生成（`addGroups`）和保存时的规范化（`normalizeGroups`） |
 | `uri.go` | 分享链接（ss / vmess / trojan / vless / hysteria2）→ Clash 节点 |
 | `parser.go` | CFW Parsers 语法实现、正则封装 |
 | `access.go` | 订阅链接的访问记录、客户端 IP 的判定 |
@@ -43,6 +45,7 @@
 | `build_test.go` | 测试：端到端构建、底板不可用时报错、上游走代理、前置代理 |
 | `api_test.go` | 测试：旧配置作废、配置校验（来源、引用、底板）、保存冲突、预览不保存与来源拉取状态、只用缓存的预览、来源缓存的查看 / 刷新 / 下载 |
 | `upstream_test.go` | 测试：节点 hosts、上游配置的保存 |
+| `groups_test.go` | 测试：新增的策略组（成员、顺序、跳过和警告、Parser 引用）、规范化 |
 | `app_test.go` | 测试：Parser 命令语法与顺序、分享链接、代理说明 |
 | `access_test.go` / `version_test.go` | 测试：访问记录与客户端 IP；程序版本 |
 
@@ -59,6 +62,7 @@ Config
 │   ├─ ID / Name / Token / FileName
 │   ├─ Base                底板机场的来源 ID
 │   ├─ Sources[]           对节点来源的引用（SourceRef）：Source（来源 ID）、Enabled、Prefix、Include、Exclude、Dialer（前置代理）
+│   ├─ Groups[]            新增的策略组（ProxyGroup）：ID、Name、Groups（底板策略组名）、Filter（节点名正则）
 │   └─ Parser
 └─ 全局：CacheMinutes、UpdateInterval、UserAgent（拉取 UA）、FollowUA（拉取 UA 跟随 Clash Verge Rev 版本）、UnlockUserAgent（解锁 UA）
 ```
@@ -86,6 +90,7 @@ Config
                  非底板来源：顺着节点的 server 找出要用的上游 hosts / fake-ip-filter，合并进 root（nodeHosts）
 5. 策略组         baseGroups：底板的策略组，成员里的节点名换成输出名，被过滤掉的去掉；
                  包含底板全部节点的组再追加其他来源的节点
+                 addGroups：在末尾追加本组新增的策略组
 6. ApplyParser    本组 Parser 对 root 做最终修改
 7. validate       检查引用了不存在的策略 / 成员 / 前置代理、前置代理成环，只产生警告
 8. toNode + 编码  输出键顺序稳定的 YAML
@@ -100,6 +105,15 @@ Config
 - 节点全被过滤掉、又没有 `use` / `include-all` / `filter` 的组填 `DIRECT` 并警告
 - 用 `use`（proxy-providers）、`include-all`、`filter` 的组原样保留，由客户端处理
 - 没有任何组包含其他来源的节点时（底板没有「全部节点」的组），给一条警告，提示用 Parser 加
+
+**新增的策略组**（`groups.go` 的 `addGroups`）：
+
+- 每项生成一个 `select` 组，追加在底板的策略组之后。成员：选中的底板策略组（按选择的顺序）在前，输出名（加了前缀、重名加了序号之后的）匹配 `Filter` 的节点（按输出顺序）在后。`Filter` 为空不加节点
+- 在 Parser 之前执行，所以 Parser 能引用新增的组。新增的组没有规则指向它，要让流量经过它得靠 Parser（加进底板的某个组、或写规则），这是有意的：不提供规则编辑
+- 只能选底板的策略组（候选是 `SourceState.Groups`），不能选其他新增的组，也就不会成环
+- 出错只警告不中断：选中的底板策略组已经不存在（机场改了名）跳过这个成员；组名和底板的策略组或节点重名，整组跳过；一个成员都没有填 `DIRECT`
+- `BuildResult.NewGroups`（`GroupStatus`）按 `Profile.Groups` 的顺序记下每个组的成员或跳过的原因，按 `ID` 对应到界面上
+- `normalizeGroups`（`validateConfig` 里调用）：ID 格式同来源 ID，不对或重复的重新生成（ID 只用于界面对应，不需要全局唯一）；组名去掉首尾空白，不能为空、不能重复、不能是 `DIRECT` 这类内置策略，否则拒绝保存；选中的底板策略组名去掉空的和重复的。是否和底板的组重名要拉到底板才知道，所以只在生成时检查
 
 **前置代理（代理链）**：`SourceRef.Dialer` 非空时，这条引用下的节点都写上 `dialer-proxy`（值是策略组名或节点名），典型用法是「自建落地节点经由机场节点出去」。它属于引用而不是来源，不进缓存键；填了就覆盖节点自带的 `dialer-proxy`，没填则保留自带的。前置代理的成员里不能有以它为前置的节点，否则会绕回自己。`Build` **不会自动排除**，只由 `validateDialers` 报警告（这是用户确认的取舍）。这个检查在 Parser 之后做，所以手填节点自带的、Parser 写上的 `dialer-proxy` 也会被检查。
 
@@ -191,7 +205,7 @@ Config
 | `GET /api/ua-version` | 是 | `UAVersion`：跟随版本时查到的 Clash Verge Rev 版本 `{version, okAt, checkedAt, error}`。`POST` 先立即查一次再返回 |
 | `POST /api/source-cache` | 是 | `{config, source}`：按 `config`（前端当前的配置）里的设置返回各远程来源的缓存 `{caches: {来源 ID: CacheInfo}, now}`，没有缓存的不出现，不请求上游。带 `source` 时先跳过缓存重新拉取这个来源，失败的原因放在 `error` 里 |
 | `POST /api/source-download` | 是 | `{config, source}` → `{yaml}`：这个来源的缓存还原成的完整配置。没有缓存返回 404，不请求上游 |
-| `POST /api/preview` | 是 | `{config, profile, refresh}`：`config` 是前端当前的整份配置，`profile` 是订阅组在其中的下标。不保存。返回 `{yaml, subs, warnings, total, groups, rules, userinfo}` |
+| `POST /api/preview` | 是 | `{config, profile, refresh}`：`config` 是前端当前的整份配置，`profile` 是订阅组在其中的下标。不保存。返回 `{yaml, subs, newGroups, warnings, total, groups, rules, userinfo}` |
 | `POST /api/format-parser` | 是 | `{text}` → `{text}`：Parser 编辑框的「格式化」。`FormatParser` 经 `yaml.Node` 往返，统一 2 空格缩进，注释、引号、流式写法保留；YAML 有错返回 400 |
 | `GET /api/access?profile=<id>` | 是 | `{records}`，该订阅组的访问记录，最新的在前 |
 | `DELETE /api/access?profile=<id>` | 是 | 清空该订阅组的访问记录 |
@@ -204,12 +218,14 @@ Config
 没有框架：`h(tag, attrs, ...kids)` 建元素（子元素数组可以任意嵌套，会被展平），`render()` 整页重绘。状态是几个模块级变量：`cfg`（整份配置）、`page`（`group` / `sources` / `settings`）、`pi`（当前订阅组下标）、`tab`、`saved`（最近一次从服务端拿到的配置）、`changes` / `dirty`（未保存的修改），以及不属于配置的 `srcStatus`（来源拉取状态）、`srcCache`（「节点来源」页显示的各来源缓存）、`previews`（各订阅组最近一次预览）、`accessLog`。
 
 - **左栏 `rail()`**：列出所有订阅组（副标题是底板名），底部是「节点来源」「全局设置」「退出登录」
-- **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页（节点来源、Parser、预览、本组设置），每个对应一个 `tabXxx(p)`
+- **订阅组工作区 `groupPage()`**：标题是可直接改名的输入框；`GROUP_TABS` 定义标签页（节点来源、策略组、Parser、预览、本组设置），每个对应一个 `tabXxx(p)`
 - **节点来源标签页 `tabSubs(p)`**：底板那行带「底板」标签、启用框禁用；其他远程来源有「设为底板」。只能选用已有来源、移除引用、改 `SourceRef` 上的字段；来源内容只读（`sourceSummary`），新建、修改和删除只在「节点来源」页（`sourcesPage`），免得在一个组里顺手一改、别的组跟着变。订阅组里不放新建来源或跳转到「节点来源」页的入口。增删引用后调 `fixBase(p)`
+- **策略组标签页 `tabGroups(p)`**：本组新增的策略组，每项可展开，填名称、节点正则，勾选底板策略组（`groupPicker`：候选取自 `srcStatus[p.base].groups`，之前选过、底板里已经没有的也列出来以便取消；勾选的顺序就是成员顺序，标上序号；勾选时只更新序号和修改标记，不重绘）。生成过预览就在行上显示成员数或跳过的原因，预览页也列出每个新增组的成员
 - **`field(label, obj, key, opts)`**：绑定到 `obj[key]` 的表单控件，输入时写回并调 `markDirty()`。不属于配置的临时输入传 `local: true`
-- **未保存的修改**：加载、保存成功、重置令牌后把配置存一份到 `saved`。`markDirty()` 用 `diffConfig(cfg, saved)` 逐项对比得出 `changes`（改回原值的不算），每项带位置（`page` / `pid` / `tab`）、对象和字段（`obj` / `key`）以及清单上显示的文字。引用没有 ID，按「同一来源的第 n 次引用」配对。页面上的标记（左栏、标签页、行上的圆点 `dot()`，输入框的竖条 `track()`）在渲染时用 `watch()` 登记。标记一律画在控件内侧（`inset` 阴影），不向外凸出，免得控件看起来和同一列错开；复选框只出现在来源行里，靠行上的圆点标出，不单独加标记。被隐藏的字段要把标记和跳转挂到可见的控件上（如跟随版本时隐藏的自定义 UA 挂在分段按钮上），`markDirty()` 时逐个更新，不重绘。清单里点一项调 `jump()`：切页面和标签页、展开行、滚动并聚焦到输入框。「放弃修改」把 `cfg` 换回 `saved` 的副本，并丢掉用未保存内容生成的预览。给配置加了用户可改的字段，要加进 `diffConfig` 对应的 `*_FIELDS`，否则改了它不会被当成修改
+- **未保存的修改**：加载、保存成功、重置令牌后把配置存一份到 `saved`。`markDirty()` 用 `diffConfig(cfg, saved)` 逐项对比得出 `changes`（改回原值的不算），每项带位置（`page` / `pid` / `tab`）、对象和字段（`obj` / `key`）以及清单上显示的文字。引用没有 ID，按「同一来源的第 n 次引用」配对；新增的策略组按 ID 配对。页面上的标记（左栏、标签页、行上的圆点 `dot()`，输入框的竖条 `track()`）在渲染时用 `watch()` 登记。标记一律画在控件内侧（`inset` 阴影），不向外凸出，免得控件看起来和同一列错开；来源行里的启用复选框靠行上的圆点标出，不单独加标记；新增策略组的那组勾选框整体当一个控件（`.checks`，外框和输入框一样），用竖条标记。被隐藏的字段要把标记和跳转挂到可见的控件上（如跟随版本时隐藏的自定义 UA 挂在分段按钮上），`markDirty()` 时逐个更新，不重绘。清单里点一项调 `jump()`：切页面和标签页、展开行、滚动并聚焦到输入框。「放弃修改」把 `cfg` 换回 `saved` 的副本，并丢掉用未保存内容生成的预览。给配置加了用户可改的字段，要加进 `diffConfig` 对应的 `*_FIELDS`，否则改了它不会被当成修改
 - **`item(obj, opts)`**：可展开的行。展开状态记在 `openItems`（WeakSet，按对象引用），重绘和排序后仍保持展开。`body(nameEl)` 只在展开时构建
 - **`dialog(title, build, actions)`**：基于原生 `<dialog>` 的对话框
+- **复制 `copyText(text, done)`**：`navigator.clipboard` 只在 HTTPS 或 localhost 下才有，用 `http://内网地址` 访问时没有它，所以退回 `execCommand('copy')`，再不行就弹出对话框（`manualCopy`）把文字选中让用户自己复制。不要直接调 `navigator.clipboard`
 - **`newID()`**：按服务端的格式生成 ID。新建来源和订阅组时用它，这样不用先保存就能被引用、预览；令牌始终由服务端发，判断「还没保存过」看 `p.token`
 - **保存 `save()`**：409 时询问是否覆盖。**预览**把 `cfg` 整份 POST 过去，不调 `save()`。订阅组标题旁的「下载配置文件」（`downloadProfile`）例外：它要和订阅链接的输出一致，所以把 `saved` 和订阅组在其中的下标交给 `POST /api/preview`（不带 `cached`，按客户端拉取的缓存规则），不记访问记录；有未保存的修改时提示下载的不含这些修改
 - **何时调用 `render()`**：结构变化（增删、排序、换底板）才重绘；普通文本输入不重绘，否则会丢焦点
@@ -288,6 +304,7 @@ go vet ./... && gofmt -l .
 - `TestBuildBaseErrors`：没选底板、底板是手动节点、底板不在本组、底板没有策略组、底板拉取失败
 - `TestDialerProxy`：前置代理写成 `dialer-proxy`、不填时保留节点自带的值、目标不存在和成环的警告
 - `TestFetchUsesProxy` / `TestProxySummary`：订阅请求和解锁请求都经过 `HTTP_PROXY`；日志里的代理说明不泄露密码
+- `TestAddGroups` / `TestNormalizeGroups`：新增策略组的成员和顺序、和底板策略组或节点重名时跳过、底板策略组不存在、正则写错、没有成员填 DIRECT、Parser 能引用；ID、组名、底板策略组名的规范化和拒绝保存的情况
 - `TestValidateSourcesAndRefs`：来源 ID 的规范化、引用跟着改、悬空引用被去掉、底板的修正
 - `TestOldConfigReset`：旧版本配置作废、留下备份、密码保留
 - `TestSaveConflict` / `TestPreviewUnsavedAndSourceStatus`：拿着旧版本号保存被拒绝、`force` 能覆盖；预览不落盘；来源状态在成功、失败、重启后的取值

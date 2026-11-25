@@ -54,7 +54,18 @@ type Profile struct {
 	// Base 是底板机场的来源 ID，必须是本组引用的远程来源。输出以它的完整 Clash 配置为准（见 build.go）
 	Base    string      `json:"base"`
 	Sources []SourceRef `json:"sources"`
-	Parser  string      `json:"parser"`
+	// Groups 是在底板的策略组之后追加的策略组（见 groups.go）。只能追加，不改底板的策略组和规则
+	Groups []ProxyGroup `json:"groups"`
+	Parser string       `json:"parser"`
+}
+
+// ProxyGroup 是订阅组追加的一个 select 策略组：成员是选中的底板策略组（按选择的顺序），
+// 再加上输出名匹配 Filter 的节点。没有规则指向它，要用的话靠 Parser 把它加进别的组或写规则。
+type ProxyGroup struct {
+	ID     string   `json:"id"` // 只用于界面区分各项（对比修改、对应预览结果），格式同来源 ID
+	Name   string   `json:"name"`
+	Groups []string `json:"groups"` // 底板的策略组名
+	Filter string   `json:"filter"` // 节点名正则，匹配输出里的名字（加了前缀、重名加了序号的）；空则不加节点
 }
 
 type Config struct {

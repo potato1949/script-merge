@@ -347,6 +347,9 @@ func validateConfig(c *Config, tokens map[string]string) error {
 			}
 		}
 		p.Base = base
+		if err := normalizeGroups(p); err != nil {
+			return err
+		}
 	}
 	if c.CacheMinutes < 0 {
 		c.CacheMinutes = 0
@@ -490,7 +493,7 @@ func (a *App) handlePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"yaml": string(res.YAML), "subs": res.Subs, "warnings": res.Warnings,
-		"total": res.Total, "groups": res.Groups, "rules": res.Rules, "userinfo": res.Userinfo,
+		"total": res.Total, "groups": res.Groups, "rules": res.Rules, "userinfo": res.Userinfo, "newGroups": res.NewGroups,
 		"cached": mode == FetchCacheOnly,
 	})
 }

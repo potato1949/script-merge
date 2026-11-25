@@ -70,6 +70,11 @@ input.changed, textarea.changed { box-shadow: inset 3px 0 0 var(--accent); }
 .tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
 .ua-field { display: flex; flex-direction: column; gap: 8px; }
 .ua-field > .lbl { font-size: 12.5px; color: var(--muted); }
+/* 一组复选框，外框和输入框一样（复选框和输入框里的文字对齐）；勾选的标上序号 */
+.checks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); }
+.checks.changed { box-shadow: inset 3px 0 0 var(--accent); }
+.checks .ord { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 600; }
+.checks .none { color: var(--muted); }
 .seg { display: inline-flex; align-self: flex-start; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 10px; background: var(--sunken); }
 .seg button { border: 0; border-radius: 7px; background: none; color: var(--muted); padding: 5px 8px; } /* 3px + 8px：文字和输入框里的文字对齐 */
 .seg button:hover { color: var(--text); }
@@ -302,8 +307,28 @@ function saveFile(name, text) {
   const a = h('a', { href: URL.createObjectURL(new Blob([text], { type: 'text/yaml' })), download: (name.trim() || '订阅').replace(/[\\/:*?"<>|]/g, '_') + '.yaml' });
   a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+// 复制到剪贴板。navigator.clipboard 只在 HTTPS 或 localhost 下才有，用 http://内网地址 访问时没有它，
+// 退回 execCommand('copy')；再不行就弹出对话框，文字已选中，让用户手动复制
 function copyText(text, done) {
-  navigator.clipboard.writeText(text).then(() => toast(done), () => toast('复制失败，请手动复制'));
+  const fallback = () => {
+    const ta = h('textarea', { readonly: true, style: 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0' });
+    ta.value = text;
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { /* 不支持 */ }
+    ta.remove();
+    if (ok) toast(done); else manualCopy(text);
+  };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(() => toast(done), fallback);
+  else fallback();
+}
+function manualCopy(text) {
+  const ta = h('textarea', { readonly: true, rows: text.includes('\n') ? 14 : 3, style: 'white-space:pre-wrap;word-break:break-all' });
+  ta.value = text;
+  const dlg = dialog('无法自动复制，请按 Ctrl+C 复制', () => ta, [], '关闭');
+  ta.focus(); ta.select();
+  return dlg;
 }
 
 // 绑定到 obj[key] 的表单控件。o.local：不属于配置的临时输入，不标记「未保存」
@@ -356,13 +381,13 @@ function item(obj, o) {
   return h('div', { class: 'item' + (open ? ' open' : '') + (o.off ? ' off' : '') }, head, open && h('div', { class: 'item-body' }, o.body(nameEl)));
 }
 
-// 对话框。build(close) 返回内容；actions: [{ label, primary, danger, onclick(close) }]
-function dialog(title, build, actions) {
+// 对话框。build(close) 返回内容；actions: [{ label, primary, danger, onclick(close) }]；cancel 是关闭按钮的文字
+function dialog(title, build, actions, cancel = '取消') {
   const dlg = h('dialog', {});
   const close = () => { dlg.close(); dlg.remove(); };
   dlg.addEventListener('cancel', () => dlg.remove());
   dlg.append(h('h3', {}, title), ...[build(close)].flat(Infinity).filter(Boolean),
-    h('div', { class: 'foot' }, h('button', { onclick: close }, '取消'),
+    h('div', { class: 'foot' }, h('button', { onclick: close }, cancel),
       actions.map(a => h('button', { class: a.primary ? 'primary' : a.danger ? 'danger' : '', onclick: () => a.onclick(close) }, a.label))));
   document.body.append(dlg);
   dlg.showModal();
@@ -379,6 +404,8 @@ function normalize(c) {
     p.id ||= newID(); p.base ||= ''; p.parser ||= ''; p.fileName ||= '';
     p.sources = (p.sources || []).filter(r => ids.has(r.source));
     for (const r of p.sources) for (const k of ['prefix', 'include', 'exclude', 'dialer']) r[k] ||= '';
+    p.groups ||= [];
+    for (const g of p.groups) { g.id ||= newID(); g.name ||= ''; g.groups ||= []; g.filter ||= ''; }
   }
   pi = Math.max(0, Math.min(pi, c.profiles.length - 1));
   return c;
@@ -420,6 +447,7 @@ async function save() {
 //   obj / key：改的是哪个对象的哪个字段（行上的圆点、输入框的标记）；删掉的东西没有 obj
 //   where / what / from / to：清单里显示的文字，多行文本不列新旧值
 const PROFILE_FIELDS = [['name', '名称'], ['base', '底板', { tab: 'subs' }], ['parser', 'Parser', { tab: 'parser', long: true }], ['fileName', '显示名称', { tab: 'more' }]];
+const GROUP_FIELDS = [['name', '名称'], ['filter', '节点正则']];
 const REF_FIELDS = [['enabled', '启用'], ['prefix', '节点名前缀'], ['include', '只保留'], ['exclude', '排除'], ['dialer', '前置代理']];
 const SOURCE_FIELDS = [['name', '名称'], ['url', '订阅链接'], ['unlockUrl', '解锁地址'], ['nodes', '节点', { long: true }]];
 const GLOBAL_FIELDS = [['cacheMinutes', '缓存时间'], ['updateInterval', '建议客户端更新间隔'], ['userAgent', '拉取订阅用的 UA'], ['followUA', '拉取 UA 的方式'], ['unlockUserAgent', '解锁 UA']];
@@ -446,6 +474,17 @@ function diffConfig(cur, old) {
     for (const x of Object.values(pool).flat()) out.push({ ...sub, what: '移除来源' + srcName(x.source) });
     const order = pairs.filter(([, x]) => x).map(([, x]) => o.sources.indexOf(x));
     if (order.some((v, i) => v < order[i - 1])) out.push({ ...sub, what: '调整了节点来源的顺序' });
+    // 新增的策略组按 ID 对应
+    const gat = { ...at, tab: 'groups' };
+    for (const g of p.groups) {
+      const x = o.groups.find(y => y.id === g.id), where = `${at.where} · 策略组${label(g)}`;
+      if (!x) { out.push({ ...gat, obj: g, what: '新增策略组' + label(g) }); continue; }
+      fields(g, x, GROUP_FIELDS, { ...gat, where });
+      if (g.groups.join('\n') !== x.groups.join('\n')) out.push({ ...gat, where, obj: g, key: 'groups', what: '底板策略组', from: x.groups.join('、') || '（空）', to: g.groups.join('、') || '（空）' });
+    }
+    for (const x of o.groups) if (!p.groups.some(g => g.id === x.id)) out.push({ ...gat, what: '删除策略组' + label(x) });
+    const gorder = p.groups.map(g => o.groups.findIndex(x => x.id === g.id)).filter(v => v >= 0);
+    if (gorder.some((v, i) => v < gorder[i - 1])) out.push({ ...gat, what: '调整了新增策略组的顺序' });
   }
   for (const o of old.profiles) if (!cur.profiles.some(p => p.id === o.id)) out.push({ page: 'group', where: '订阅组' + label(o), what: '删除' });
   for (const s of cur.sources) {
@@ -465,7 +504,7 @@ function affectedProfiles() {
 function jump(e) {
   if (e.pid) { const i = cfg.profiles.findIndex(p => p.id === e.pid); if (i < 0) return; pi = i; if (e.tab) tab = e.tab; }
   page = e.page;
-  if (e.obj && (cfg.sources.includes(e.obj) || cfg.profiles.some(p => p.sources.includes(e.obj)))) openItems.add(e.obj);
+  if (e.obj && (cfg.sources.includes(e.obj) || cfg.profiles.some(p => p.sources.includes(e.obj) || p.groups.includes(e.obj)))) openItems.add(e.obj);
   jumpTo = e; render();
 }
 function changesDialog() {
@@ -531,11 +570,11 @@ function render() {
 }
 
 // ---------- 订阅组工作区 ----------
-const GROUP_TABS = [['subs', '节点来源', p => p.sources.length], ['parser', 'Parser'], ['preview', '预览'], ['more', '本组设置']];
+const GROUP_TABS = [['subs', '节点来源', p => p.sources.length], ['groups', '策略组', p => p.groups.length], ['parser', 'Parser'], ['preview', '预览'], ['more', '本组设置']];
 const subLink = p => `${location.origin}/sub/${p.token}`;
 function groupPage() {
   const p = cur();
-  const views = { subs: tabSubs, parser: tabParser, preview: tabPreview, more: tabMore };
+  const views = { subs: tabSubs, groups: tabGroups, parser: tabParser, preview: tabPreview, more: tabMore };
   const title = h('input', { class: 'title-input', type: 'text', value: p.name, 'aria-label': '订阅组名称', spellcheck: 'false', placeholder: '订阅组名称',
     oninput: e => { p.name = e.target.value; markDirty(); document.querySelector('.gitem.on b').textContent = p.name || '(未命名)'; } });
   track(title, p, 'name');
@@ -671,10 +710,66 @@ function newGroupDialog() {
     field('名称', draft, 'name', { local: true }),
     remotes.length > 0 && [h('div', { class: 'sublabel', style: 'margin-top:12px' }, '底板机场'), pickEl],
   ], [{ label: '新建订阅组', primary: true, onclick: close => {
-    const p = { id: newID(), name: draft.name.trim() || '未命名', token: '', fileName: '', base: draft.base, sources: [], parser: '' };
+    const p = { id: newID(), name: draft.name.trim() || '未命名', token: '', fileName: '', base: draft.base, sources: [], groups: [], parser: '' };
     if (draft.base) p.sources.push(blankRef(srcOf(draft.base)));
     cfg.profiles.push(p); markDirty(); close(); tab = 'subs'; go('group', cfg.profiles.length - 1);
   } }]);
+}
+
+// 本组追加的策略组（select）：成员是勾选的底板策略组（按勾选的顺序）加上节点名匹配正则的节点，
+// 追加在底板的策略组之后，没有规则指向它们（要用就写 Parser）。生成过预览就在行上显示结果
+function tabGroups(p) {
+  const results = previews[p.id]?.newGroups || [];
+  const add = () => {
+    let n = p.groups.length + 1;
+    while (p.groups.some(g => g.name === '新策略组 ' + n)) n++;
+    const g = { id: newID(), name: '新策略组 ' + n, groups: [], filter: '' };
+    p.groups.push(g); openItems.add(g); markDirty(); render();
+  };
+  return [
+    p.groups.length === 0 ? empty('还没有新增的策略组')
+      : h('div', { class: 'list' }, p.groups.map((g, i) => {
+        const st = results.find(x => x.id === g.id);
+        return item(g, {
+          name: g.name, status: st && groupResult(st),
+          controls: listButtons(p.groups, i),
+          body: nameEl => [
+            h('div', { class: 'grid' },
+              field('名称', g, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
+              field('节点（正则，匹配加了前缀的节点名，可选）', g, 'filter', { placeholder: '例：^家宽|香港' }),
+              groupPicker(p, g)),
+          ],
+        });
+      })),
+    h('div', { class: 'row' }, h('button', { onclick: add }, '+ 新增策略组')),
+  ];
+}
+// 选用的底板策略组：候选是底板最近一次拉取到的策略组名，勾选的顺序就是成员的顺序（标上序号）。
+// 之前选过、底板里已经没有的也列出来，可以取消。勾选时只更新序号，不重绘
+function groupPicker(p, g) {
+  const cands = srcStatus[p.base]?.groups || [];
+  const names = [...cands, ...g.groups.filter(n => !cands.includes(n))];
+  const rows = names.map(n => {
+    const cb = h('input', { type: 'checkbox', onchange: e => {
+      if (e.target.checked) g.groups.push(n); else g.groups.splice(g.groups.indexOf(n), 1);
+      update(); markDirty();
+    } });
+    const ord = h('span', { class: 'ord' });
+    return { n, cb, ord, el: h('label', { class: 'c' }, cb, n, ord, !cands.includes(n) && h('span', { class: 'chip' }, '底板里没有')) };
+  });
+  const update = () => { for (const r of rows) { const at = g.groups.indexOf(r.n); r.cb.checked = at >= 0; r.ord.hidden = at < 0; r.ord.textContent = at < 0 ? "" : at + 1; } };
+  update();
+  const box = h('div', { class: 'checks', role: 'group', 'aria-label': '底板策略组' },
+    rows.length > 0 ? rows.map(r => r.el) : h('span', { class: 'none' }, !p.base ? '还没有选择底板' : '底板还没有拉取过，没有可选的策略组'));
+  track(box, g, 'groups');
+  return h('div', { class: 'ua-field wide' }, h('span', { class: 'lbl' }, '底板策略组（可选）'), box);
+}
+// 一个新增策略组在预览里的结果
+function groupResult(st) {
+  if (st.skipped) return h('span', { class: 'tag err' }, '未生成：' + st.skipped);
+  const nodes = st.members.length - st.groups;
+  if (st.groups === 0 && nodes === 1 && st.members[0] === 'DIRECT') return h('span', { class: 'tag err' }, '没有成员，已填入 DIRECT');
+  return h('span', { class: 'tag ok' }, [st.groups > 0 && `${st.groups} 个策略组`, nodes > 0 && `${nodes} 个节点`].filter(Boolean).join(' + '));
 }
 
 function tabParser(p) {
@@ -721,6 +816,8 @@ async function loadPreview(p, fetch) {
   if (previewSeq[id] !== seq) return;
   const old = previews[id]?.subs || [];
   for (const x of res.subs || []) if (old.some(o => o.index === x.index && o.id === x.id && openItems.has(o))) openItems.add(x);
+  const oldGroups = previews[id]?.newGroups || [];
+  for (const x of res.newGroups || []) if (oldGroups.some(o => o.id === x.id && openItems.has(o))) openItems.add(x);
   previews[id] = res;
   if (page === 'group' && tab === 'preview' && cur()?.id === id) render();
 }
@@ -766,6 +863,11 @@ function tabPreview(p) {
       preview.subs.length > 0 && h('div', { class: 'list' }, preview.subs.map(s => item(s, {
         name: s.name, chips: [s.base && ['底板', 'base']], status: subResult(s),
         body: () => nodeChanges(s),
+      }))),
+      preview.newGroups?.length > 0 && h('div', { class: 'list' }, preview.newGroups.map(g => item(g, {
+        name: g.name, chips: ['新增策略组'], status: groupResult(g),
+        body: () => g.skipped ? h('p', { class: 'hint', style: 'margin:0' }, '未生成：' + g.skipped)
+          : h('div', { class: 'nodes' }, g.members.map((m, i) => h('span', { class: 'chip' + (i < g.groups ? ' base' : '') }, m))),
       }))),
       preview.warnings.length > 0 && h('div', { class: 'warnbox' }, preview.warnings.map(w => h('div', {}, w))),
       h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'hint', style: 'margin:0 auto 0 0' }, `共 ${preview.total} 个节点、${preview.groups} 个策略组、${preview.rules} 条规则`),

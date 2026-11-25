@@ -21,8 +21,10 @@ type BuildResult struct {
 	Warnings []string    `json:"warnings"`
 	Total    int         `json:"total"` // 最终节点总数
 	Groups   int         `json:"groups"`
-	Rules    int         `json:"rules"`
-	Userinfo string      `json:"userinfo"`
+	// NewGroups 是订阅组追加的策略组各自的结果，顺序同 Profile.Groups
+	NewGroups []GroupStatus `json:"newGroups"`
+	Rules     int           `json:"rules"`
+	Userinfo  string        `json:"userinfo"`
 }
 
 func deepCopy(v any) any {
@@ -77,7 +79,7 @@ var errNoCache = errors.New("底板机场还没有缓存")
 // Build 为订阅组 p 生成最终配置。流程：
 // 并发拉取本组引用的来源 → 以底板机场的完整配置为基础 → 汇总节点（底板的在前；过滤、加前缀、重名加序号）
 // → 底板的策略组换上新的节点名，包含底板全部节点的组再加上其他来源的节点 → 带上其他来源节点地址要用的 hosts
-// → Parser → 校验 → 输出 YAML。底板的规则、rule-providers、DNS 等其余内容原样保留。
+// → 追加本组新增的策略组 → Parser → 校验 → 输出 YAML。底板的规则、rule-providers、DNS 等其余内容原样保留。
 func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, error) {
 	res := &BuildResult{Warnings: []string{}}
 	warn := func(format string, a ...any) { res.Warnings = append(res.Warnings, fmt.Sprintf(format, a...)) }
@@ -231,8 +233,10 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 	}
 	res.Userinfo = mergeUserinfo(infos)
 
-	// 4. 策略组：底板的，换上新的节点名
+	// 4. 策略组：底板的，换上新的节点名；再追加本组新增的策略组
 	groups, ws := baseGroups(&base.upstream, rename, others)
+	res.Warnings = append(res.Warnings, ws...)
+	groups, res.NewGroups, ws = addGroups(p.Groups, groups, namesOf(proxies))
 	res.Warnings = append(res.Warnings, ws...)
 	root["proxies"] = proxies
 	root["proxy-groups"] = groups
