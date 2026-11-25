@@ -85,6 +85,9 @@ input.changed, textarea.changed, .checks.changed, .seg.changed { box-shadow: ins
 /* ---------- 通用排版 ---------- */
 .hint { color: var(--muted); font-size: 13px; margin: 0; max-width: 68ch; }
 .sublabel { font-size: 13px; color: var(--muted); margin-bottom: 12px; max-width: 68ch; overflow-wrap: anywhere; }
+.src-info { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px 12px; font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+.src-info > span:nth-child(2n) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.src-info .url { font-family: var(--mono); }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px 20px; margin-bottom: 14px; }
 .card h3, dialog h3 { margin: 0 0 14px; font: 600 17px/1.3 var(--serif); }
 /* 表单固定两列（窄屏一列），长的输入框用 .wide 占满一行 */
@@ -742,7 +745,7 @@ function tabSubs(p) {
             listButtons(p.sources, i, () => { p.sources.splice(i, 1); fixBase(p); markDirty(); render(); }),
           ],
           body: () => [
-            h('div', { class: 'sublabel' }, sourceSummary(s)),
+            sourceSummary(s),
             h('div', { class: 'grid' },
               field('节点名前缀（可选）', r, 'prefix', { placeholder: '例：[机场A] ' }),
               dialerField(r, dialerList),
@@ -779,10 +782,11 @@ function dialerField(r, list) {
     : field(null, r, 'dialer', { placeholder: '策略组名或节点名', list });
   return h('div', { class: 'ua-field' }, h('span', { class: 'lbl' }, '前置代理（可选）'), h('div', { class: 'row dial' }, seg, input));
 }
-// 来源内容的只读概述（订阅组里展示用）
+// 来源内容的只读概述（订阅组里展示用）：每项一行，链接过长时单行省略，悬停看全文
 function sourceSummary(s) {
-  if (s.kind === 'manual') return `手动填写的节点，共 ${s.nodes.split('\n').filter(l => l.trim()).length} 行。`;
-  return `订阅链接：${s.url.trim() || '（未填写）'}${s.unlockUrl.trim() ? '；解锁地址：' + s.unlockUrl.trim() : ''}。`;
+  const rows = s.kind === 'manual' ? [['节点', `${s.nodes.split('\n').filter(l => l.trim()).length} 行`]]
+    : [['订阅链接', s.url.trim() || '（未填写）', 'url'], s.unlockUrl.trim() && ['解锁地址', s.unlockUrl.trim(), 'url']];
+  return h('div', { class: 'src-info' }, rows.filter(Boolean).map(([k, v, cls]) => [h('span', {}, k), h('span', { class: cls || '', title: v }, v)]));
 }
 function pickSourceDialog(p, use) {
   let picked = cfg.sources.find(s => !p.sources.some(r => r.source === s.id)) || cfg.sources[0];
