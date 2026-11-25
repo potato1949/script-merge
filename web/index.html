@@ -7,26 +7,32 @@
 <!-- 页签图标：和左上角品牌图标同一个图形，颜色固定为强调色（favicon 里用不了 CSS 变量） -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 22 22' fill='none' stroke='%23d97757' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 5c6 0 6 6 10 6h6M3 17c6 0 6-6 10-6'/%3E%3C/svg%3E">
 <style>
-/* 配色：改主题只需改这两组变量 */
+/* 配色：改主题只需改这两组变量
+   尺寸只用几档：字号 12（标签、芯片、次要信息）/ 13（提示、警告、代码、小按钮）/ 14（正文、输入框、按钮），标题另算；
+   圆角 12（卡片、列表、对话框等外层容器）/ 8（输入框、按钮、面板）/ 6（芯片、状态标签、小按钮），胶囊形用 99；
+   纵向间距：块与块之间 14px，表单项之间 12px */
 :root {
+  color-scheme: light;
   --bg: #faf9f5; --side: #f0eee6; --surface: #ffffff; --sunken: #f5f4ed;
   --text: #141413; --muted: #6b6a64; --line: #e3e0d3; --line-strong: #cfccbd;
   --accent: #c96442; --accent-hover: #b5563a; --on-accent: #ffffff; --accent-soft: #f6e4dc;
-  --danger: #b3402f; --ok: #47724a; --warn-bg: #f7ecd2; --warn: #7a5410;
+  --danger: #b5323e; --danger-soft: #f8e1e2; --ok: #47724a; --warn-bg: #f7ecd2; --warn: #7a5410;
   --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Georgia, "Songti SC", "STSong", "Source Han Serif SC", "Noto Serif CJK SC", serif;
   --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
+    color-scheme: dark; /* 滚动条、数字输入框等原生控件跟着变深色 */
     --bg: #262624; --side: #1f1e1d; --surface: #30302e; --sunken: #232321;
     --text: #f5f4ed; --muted: #a6a39a; --line: #42413d; --line-strong: #5a5852;
     --accent: #d97757; --accent-hover: #e38a6c; --on-accent: #1f1e1d; --accent-soft: #4a3229;
-    --danger: #ec8573; --ok: #8fbf92; --warn-bg: #43381f; --warn: #ecc878;
+    --danger: #f08c90; --danger-soft: #4d2a2e; --ok: #8fbf92; --warn-bg: #43381f; --warn: #ecc878;
   }
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+[hidden] { display: none !important; }
 
 /* ---------- 左栏：订阅组列表 ---------- */
 .shell { display: grid; grid-template-columns: 236px minmax(0, 1fr); min-height: 100vh; }
@@ -35,14 +41,14 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var
 .brand svg { color: var(--accent); flex: none; }
 .rail-label { font-size: 12px; color: var(--muted); padding: 4px 10px 6px; }
 .glist { display: flex; flex-direction: column; gap: 2px; }
-.rail button { border: 1px solid transparent; background: none; text-align: left; border-radius: 9px; padding: 7px 10px; color: var(--muted); }
-.rail button:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); border-color: transparent; }
+.rail button { border: 1px solid transparent; background: none; text-align: left; padding: 7px 10px; color: var(--muted); }
+.rail button:hover { background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text); }
 .rail button.on { background: var(--surface); color: var(--text); border-color: var(--line); }
 .gitem { display: flex; flex-direction: column; gap: 1px; }
 .rail .gitem { position: relative; padding-right: 22px; }
 .gitem .dot { position: absolute; right: 10px; top: 15px; margin: 0; }
 .gitem b { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gitem small { font-size: 12px; color: var(--muted); }
+.gitem small { font-size: 12px; line-height: 18px; color: var(--muted); }
 .rail .gnew { color: var(--accent); margin-top: 4px; }
 .railnav { margin-top: auto; padding-top: 16px; display: flex; flex-direction: column; gap: 2px; }
 .ver { font-size: 12px; color: var(--muted); padding: 10px 10px 0; font-variant-numeric: tabular-nums; }
@@ -50,57 +56,55 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.55 var
 /* ---------- 工作区 ---------- */
 main { padding: 0 40px 80px; max-width: 980px; width: 100%; }
 .ws-head { position: sticky; top: 0; z-index: 5; background: var(--bg); padding-top: 22px; }
+.ws-head.plain { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .ws-top { display: flex; align-items: center; gap: 10px; min-height: 44px; }
 .ws-top h2, .title-input { font: 500 28px/1.2 var(--serif); letter-spacing: .01em; margin: 0; }
 .ws-top h2 { margin-right: auto; }
+.content { padding-top: 18px; }
 /* 未保存的修改：保存按钮旁的修改清单入口、各处的圆点、改过的输入框左侧的竖条（标记都画在控件内侧，不向外凸出；
    复选框只在来源行里，靠行上的圆点标出，不单独加标记） */
-button.changes { border-color: transparent; background: none; color: var(--warn); font-size: 13px; padding: 4px 8px; }
+button.changes { border-color: transparent; background: none; color: var(--warn); font-size: 13px; padding: 7px 10px; }
 button.changes:hover:not(:disabled) { border-color: var(--warn); }
 .dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: middle; }
-input.changed, textarea.changed { box-shadow: inset 3px 0 0 var(--accent); }
+input.changed, textarea.changed, .checks.changed, .seg.changed { box-shadow: inset 3px 0 0 var(--accent); }
 .pick.changes button { flex-direction: column; align-items: stretch; gap: 2px; }
 .pick.changes small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-[hidden] { display: none !important; }
-.tabs { display: flex; gap: 24px; margin-top: 10px; border-bottom: 1px solid var(--line); overflow-x: auto; }
-.ws-head.plain { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
-/* 标签不带左右内边距：第一个标签的文字和标题、下面的内容左对齐，下划线和文字等宽 */
-.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 9px 0 8px; white-space: nowrap; }
-.tabs button:hover { color: var(--text); }
-.tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
-.ua-field { display: flex; flex-direction: column; gap: 8px; }
-.ua-field > .lbl { font-size: 12.5px; color: var(--muted); }
-/* 一组复选框，外框和输入框一样（复选框和输入框里的文字对齐）；勾选的标上序号 */
-.checks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); }
-.checks.changed { box-shadow: inset 3px 0 0 var(--accent); }
-.checks .ord { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 600; }
-.checks .none { color: var(--muted); }
-/* 新增策略组行首的图标：没有图标时也占位，各行的名称对齐 */
-.row > .fold { margin-left: auto; }
-.gicon { width: 20px; height: 20px; object-fit: contain; display: block; }
-.seg { display: inline-flex; align-self: flex-start; flex-wrap: wrap; gap: 2px; padding: 3px; border-radius: 10px; background: var(--sunken); }
-.seg button { border: 0; border-radius: 7px; background: none; color: var(--muted); padding: 5px 8px; } /* 3px + 8px：文字和输入框里的文字对齐 */
-.seg button:hover { color: var(--text); }
-.seg button.on { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 18%, transparent); }
-.seg.changed { box-shadow: inset 3px 0 0 var(--accent); }
-.tabs .n { margin-left: 6px; font-size: 12px; color: var(--muted); font-weight: 400; }
-.content { padding-top: 18px; }
 
-.hint { color: var(--muted); font-size: 13px; margin: 0 0 12px; max-width: 68ch; }
-.hint.warn { color: var(--warn); }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
-.card h3, dialog h3 { margin: 0 0 4px; font: 600 17px/1.3 var(--serif); }
-.section-title { font: 600 17px/1.3 var(--serif); margin: 26px 0 10px; }
-.section-title:first-child { margin-top: 0; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+/* 标签页：标签不带左右内边距，第一个标签的文字和标题、下面的内容左对齐，下划线和文字等宽 */
+.tabs { display: flex; gap: 24px; margin-top: 10px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.tabs button { position: relative; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--muted); padding: 9px 0 8px; }
+.tabs button:hover { color: var(--text); }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+/* 选中的标签加粗：按加粗后的宽度占位；修改圆点画在标签右上方的间隙里。两者都不改变标签宽度，切换、修改时后面的标签不左右跳 */
+.tabs .tl { display: inline-grid; }
+.tabs .tl::after { content: attr(data-t); font-weight: 600; visibility: hidden; height: 0; overflow: hidden; }
+.tabs button.on .tl { font-weight: 600; }
+.tabs .n { margin-left: 6px; font-size: 12px; color: var(--muted); font-weight: 400; }
+.tabs .dot { position: absolute; top: 10px; right: -11px; margin: 0; }
+
+/* ---------- 通用排版 ---------- */
+.hint { color: var(--muted); font-size: 13px; margin: 0; max-width: 68ch; }
+.sublabel { font-size: 13px; color: var(--muted); margin-bottom: 12px; max-width: 68ch; overflow-wrap: anywhere; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px 20px; margin-bottom: 14px; }
+.card h3, dialog h3 { margin: 0 0 14px; font: 600 17px/1.3 var(--serif); }
+/* 表单固定两列（窄屏一列），长的输入框用 .wide 占满一行 */
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
 .wide { grid-column: 1 / -1; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.gap { height: 12px; }
+.grow { margin-right: auto; }
+.row > .fold { margin-left: auto; }
+.row > input { flex: 1 1 300px; width: auto; }
+.bar { margin-bottom: 14px; }
+.gap { height: 14px; }
+.nw { white-space: nowrap; }
+.empty { border: 1px dashed var(--line-strong); border-radius: 12px; padding: 28px 20px; text-align: center; color: var(--muted); margin-bottom: 14px; }
+.empty b { display: block; color: var(--text); font: 600 17px/1.4 var(--serif); }
+.empty .row { justify-content: center; margin-top: 14px; }
 
-/* 可展开的行：节点来源 */
+/* ---------- 可展开的行 ---------- */
 .list { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 14px; overflow: hidden; }
 .item + .item { border-top: 1px solid var(--line); }
-.item-head { display: flex; align-items: center; gap: 10px; padding: 11px 14px; cursor: pointer; min-height: 48px; }
+.item-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px 10px 16px; cursor: pointer; min-height: 52px; }
 .item-head:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
 .item-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .chev { flex: none; width: 14px; display: inline-flex; justify-content: center; color: var(--muted); }
@@ -108,86 +112,116 @@ input.changed, textarea.changed { box-shadow: inset 3px 0 0 var(--accent); }
 .item.open > .item-head .chev::before { transform: rotate(45deg); }
 .item-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .item.off > .item-head .item-name { color: var(--muted); font-weight: 400; }
-.chip.base { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.chip { flex: none; font-size: 12px; padding: 1px 8px; border-radius: 6px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
-.item-ctl { margin-left: auto; display: flex; gap: 4px; flex: none; }
-.item-body { padding: 4px 16px 18px 38px; }
-.empty { border: 1px dashed var(--line-strong); border-radius: 12px; padding: 28px 20px; text-align: center; color: var(--muted); margin-bottom: 14px; }
-.empty b { display: block; color: var(--text); font: 600 16px/1.4 var(--serif); margin-bottom: 4px; }
-.section-head { display: flex; align-items: center; gap: 10px; margin: 26px 0 10px; }
-.section-head .section-title { margin: 0 auto 0 0; }
+.item-ctl { margin-left: auto; display: flex; gap: 6px; flex: none; }
+/* 行首的复选框 / 图标（.lead）。新增策略组的图标：列表里有任一组配了图标时（.icons）各行都占位，名称对齐；都没有时不占位 */
+.item-head > .lead { display: inline-flex; }
+.gicon { width: 20px; height: 20px; object-fit: contain; display: block; }
+.list:not(.icons) .lead:has(> .gicon) { display: none; }
+/* 展开的内容和行头的名称左对齐：16 + 箭头 14 + 间距 10，行首有复选框（15 + 10）或图标（20 + 10）时再往右 */
+.item-body { padding: 6px 16px 22px calc(40px + var(--lead, 0px)); }
+.item:has(> .item-head > .lead > input) { --lead: 25px; }
+.list.icons .item:has(> .item-head > .lead > .gicon) { --lead: 30px; }
+.item-body > :last-child { margin-bottom: 0; }
 
-/* 表单 */
-label.f { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+/* ---------- 芯片与状态标签：同样的形状；芯片是属性，状态标签前面带圆点 ---------- */
+.chip, .tag { flex: none; font-size: 12px; line-height: 18px; padding: 1px 8px; border-radius: 6px; background: var(--sunken); color: var(--muted); white-space: nowrap; }
+.chip.base { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.chip.drop { text-decoration: line-through; }
+.tag { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.tag::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
+.tag.ok { color: var(--ok); }
+.tag.err { color: var(--danger); background: var(--danger-soft); }
+td .chip { margin-left: 6px; }
+
+/* ---------- 表单控件 ---------- */
+label.f { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); min-width: 0; }
 label.c { display: inline-flex; align-items: center; gap: 7px; color: var(--text); }
+.ua-field { display: flex; flex-direction: column; gap: 6px; }
+.ua-field > .lbl { font-size: 13px; color: var(--muted); }
+.ua-field > .lbl + * + * { margin-top: 2px; }
 input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 input[type=text], input[type=password], input[type=number], select, textarea {
   width: 100%; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 8px;
-  background: var(--bg); color: var(--text); font: 14px/1.4 var(--sans);
+  background: var(--bg); color: var(--text); font: 14px/20px var(--sans);
 }
-textarea { font: 12.5px/1.6 var(--mono); resize: vertical; white-space: pre; overflow: auto; }
+textarea { font: 13px/1.6 var(--mono); resize: vertical; white-space: pre; overflow: auto; padding: 10px 12px; }
+textarea.wrap { white-space: pre-wrap; word-break: break-all; }
+/* Parser 编辑区占满标签页下方的可视高度 */
+textarea.parser { display: block; height: calc(100vh - 250px); min-height: 360px; }
 ::placeholder { color: color-mix(in srgb, var(--muted) 70%, transparent); }
 input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-button { font: 14px/1.4 var(--sans); padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); cursor: pointer; white-space: nowrap; }
-button:hover:not(:disabled) { border-color: var(--text); }
+/* 一组复选框，外框和输入框一样（复选框和输入框里的文字对齐）；勾选的标上序号 */
+.checks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); }
+.checks .ord { display: inline-flex; align-items: center; justify-content: center; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; }
+.checks .none { color: var(--muted); }
+/* 分段按钮：和输入框同高；2px + 9px 让文字和输入框里的文字（1px 边框 + 10px）对齐 */
+.seg { display: inline-flex; align-self: flex-start; flex-wrap: wrap; gap: 2px; padding: 2px; border-radius: 8px; background: var(--sunken); }
+.seg button { border: 0; border-radius: 6px; background: none; color: var(--muted); padding: 6px 9px; }
+.seg button:hover { color: var(--text); }
+.seg button.on { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 18%, transparent); }
+
+/* ---------- 按钮 ----------
+   两种尺寸：常规（36px，和输入框同高）用于页面上的操作；.sm（28px）只用在列表行头和行内的信息面板里，
+   .ico 是行头的方形图标按钮（上移 / 下移）。行高写死，字号不同时高度也不变。
+   通用的悬停样式用 :where() 降到最低优先级，标签页、左栏这些自带样式的按钮不受它影响 */
+button { font: 14px/20px var(--sans); padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--text); cursor: pointer; white-space: nowrap; }
+button:where(:hover:not(:disabled)) { border-color: color-mix(in srgb, var(--text) 32%, var(--line-strong)); background: color-mix(in srgb, var(--text) 3%, var(--surface)); }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; }
 button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
 button.danger { color: var(--danger); }
 button.danger:hover:not(:disabled) { border-color: var(--danger); }
-button.sm { padding: 3px 9px; font-size: 12.5px; border-radius: 6px; }
+button.sm { padding: 4px 10px; font-size: 13px; line-height: 18px; border-radius: 6px; }
+button.sm.ico { width: 28px; padding: 4px 0; }
 button:disabled { opacity: .4; cursor: default; }
 /* 订阅组标题：看起来是标题，点击即可改名（写在通用输入框样式之后以覆盖它） */
 .ws-top input.title-input { flex: 1; width: auto; min-width: 0; margin: 0 auto 0 -9px; padding: 3px 8px; border: 1px solid transparent; border-radius: 8px; background: none; font: 500 28px/1.2 var(--serif); letter-spacing: .01em; text-overflow: ellipsis; }
 .ws-top input.title-input:hover { border-color: var(--line-strong); }
 .ws-top input.title-input:focus-visible { border-color: var(--line-strong); background: var(--surface); outline-offset: 0; }
-.sublabel { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; max-width: 68ch; }
 
-/* 状态与输出 */
-.tag { flex: none; font-size: 12.5px; padding: 2px 10px; border-radius: 99px; background: var(--sunken); color: var(--muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tag.ok { color: var(--ok); }
-.tag.err { color: var(--danger); background: var(--accent-soft); }
-.warnbox { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 9px 13px; margin-bottom: 12px; font-size: 13px; }
+/* ---------- 状态与输出 ---------- */
+.warnbox { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 9px 13px; margin-bottom: 14px; font-size: 13px; }
 .warnbox div + div { margin-top: 3px; }
-.nodes { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+.warnbox.row { padding-block: 6px; }
+.nodes { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 14px; }
 .nodes .chip { white-space: normal; }
-.chip.drop { text-decoration: line-through; }
 /* 来源展开后的信息面板：标签在上、数值在下，横向排开，操作按钮靠右 */
-.facts { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 32px; background: var(--sunken); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin-bottom: 18px; }
+.facts { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 32px; background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; margin-bottom: 14px; }
 .fact { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .fact small { font-size: 12px; color: var(--muted); }
 .fact > span { font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fact > span.warn { color: var(--warn); }
 .fact > span.muted { color: var(--muted); }
 .facts .acts { margin-left: auto; display: flex; gap: 6px; }
-pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow: auto; max-height: 62vh; font: 12.5px/1.6 var(--mono); margin: 0; }
-.tblwrap { overflow-x: auto; }
+/* 预览的配置全文：不限高度，只滚动页面 */
+pre { background: var(--sunken); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; font: 13px/1.6 var(--mono); margin: 0; }
+.tblwrap { overflow-x: auto; margin-bottom: 14px; }
 table { border-collapse: collapse; width: 100%; min-width: 820px; }
-td, th { padding: 4px; text-align: left; font-size: 12.5px; vertical-align: middle; }
+td, th { padding: 4px; text-align: left; font-size: 13px; vertical-align: middle; }
 /* 首尾两列不留外侧内边距，文字和卡片标题对齐 */
 td:first-child, th:first-child { padding-left: 0; }
 td:last-child, th:last-child { padding-right: 0; }
 th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
-td input[type=text], td select { padding: 5px 8px; font-size: 13px; }
 td.clip { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 对话框 */
-dialog { border: 1px solid var(--line); border-radius: 14px; padding: 22px; background: var(--surface); color: var(--text); width: min(480px, 92vw); box-shadow: 0 18px 50px rgba(20, 20, 19, .18); }
+/* ---------- 对话框 ---------- */
+dialog { border: 1px solid var(--line); border-radius: 12px; padding: 22px; background: var(--surface); color: var(--text); width: min(480px, 92vw); box-shadow: 0 18px 50px rgba(20, 20, 19, .18); }
 dialog::backdrop { background: rgba(20, 20, 19, .38); }
 dialog .hint { margin-bottom: 14px; }
-dialog h3 + .pick { margin-top: 12px; }
+dialog .sublabel { margin: 14px 0 6px; }
 dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+dialog label.f + label.f { margin-top: 12px; }
 .pick { display: flex; flex-direction: column; gap: 6px; max-height: 46vh; overflow-y: auto; }
 .pick button { display: flex; align-items: center; gap: 10px; text-align: left; padding: 10px 12px; background: var(--bg); border-color: var(--line); }
+.pick button:hover:not(:disabled):not(.on) { border-color: var(--line-strong); }
 .pick button b { margin-right: auto; overflow: hidden; text-overflow: ellipsis; }
 .pick button.on { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-dialog label.f + label.f { margin-top: 12px; }
 
-/* 登录 */
+/* ---------- 登录 ---------- */
 .center { max-width: 380px; margin: 16vh auto 0; padding: 28px; }
 .center h3 { font-size: 24px; font-weight: 500; margin-bottom: 16px; }
-.center button { width: 100%; margin-top: 12px; padding: 9px; }
+.center button { width: 100%; margin-top: 12px; }
 
-#toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 99; background: var(--text); color: var(--bg); padding: 9px 18px; border-radius: 99px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; font-size: 13.5px; }
+#toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 99; background: var(--text); color: var(--bg); padding: 9px 18px; border-radius: 99px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; font-size: 13px; }
 #toast.show { opacity: 1; }
 @media (prefers-reduced-motion: reduce) { #toast, .chev::before { transition: none; } }
 
@@ -208,6 +242,7 @@ dialog label.f + label.f { margin-top: 12px; }
   .ws-top { flex-wrap: wrap; }
   .item-head { flex-wrap: wrap; }
   .item-body { padding-left: 16px; }
+  .grid { grid-template-columns: minmax(0, 1fr); }
 }
 </style>
 </head>
@@ -333,7 +368,7 @@ function copyText(text, done) {
   else fallback();
 }
 function manualCopy(text) {
-  const ta = h('textarea', { readonly: true, rows: text.includes('\n') ? 14 : 3, style: 'white-space:pre-wrap;word-break:break-all' });
+  const ta = h('textarea', { readonly: true, rows: text.includes('\n') ? 14 : 3, class: 'wrap' });
   ta.value = text;
   const dlg = dialog('无法自动复制，请按 Ctrl+C 复制', () => ta, [], '关闭');
   ta.focus(); ta.select();
@@ -366,13 +401,17 @@ function field(label, obj, key, o = {}) {
 function listButtons(list, i, remove) {
   const move = d => { const j = i + d; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; markDirty(); render(); };
   return [
-    h('button', { class: 'sm', title: '上移', 'aria-label': '上移', onclick: () => move(-1), disabled: i === 0 }, '↑'),
-    h('button', { class: 'sm', title: '下移', 'aria-label': '下移', onclick: () => move(1), disabled: i === list.length - 1 }, '↓'),
+    h('button', { class: 'sm ico', title: '上移', 'aria-label': '上移', onclick: () => move(-1), disabled: i === 0 }, '↑'),
+    h('button', { class: 'sm ico', title: '下移', 'aria-label': '下移', onclick: () => move(1), disabled: i === list.length - 1 }, '↓'),
     h('button', { class: 'sm danger', onclick: remove || (() => { list.splice(i, 1); markDirty(); render(); }) }, '删除'),
   ];
 }
 const datalist = (id, values) => h('datalist', { id }, values.map(v => h('option', { value: v })));
-const empty = (title, text) => h('div', { class: 'empty' }, h('b', {}, title), text);
+const empty = (title, ...actions) => h('div', { class: 'empty' }, h('b', {}, title), actions.flat(Infinity).some(Boolean) && h('div', { class: 'row' }, actions));
+// 列表和它下方的操作按钮、「全部展开 / 收起」。list 为空（false）时显示空状态，操作按钮放进空状态的框里
+const listWithActions = (list, emptyTitle, actions, keys) => list
+  ? [list, h('div', { class: 'row' }, actions, h('span', { class: 'fold' }, foldAll(keys)))]
+  : empty(emptyTitle, actions);
 
 // 配置里可展开的行对应的键：来源按 ID；订阅组里的引用没有 ID，按「订阅组 ID + 来源 ID + 同一来源的第 n 次引用」；
 // 新增策略组按 ID。不是这几种的返回 null
@@ -389,7 +428,7 @@ function rowKey(obj) {
 function foldAll(keys) {
   if (keys.length === 0) return null;
   const allOpen = keys.every(k => openKeys.has(k));
-  return h('button', { class: 'sm', onclick: () => { setOpen(keys, !allOpen); render(); } }, allOpen ? '全部收起' : '全部展开');
+  return h('button', { onclick: () => { setOpen(keys, !allOpen); render(); } }, allOpen ? '全部收起' : '全部展开');
 }
 
 // 可展开的行。o: { key, name, lead, chips, status, controls, off, body(nameEl) }；chips 里的数组项 [文字, class] 带额外样式。
@@ -397,12 +436,12 @@ function foldAll(keys) {
 function item(obj, o) {
   const key = o.key ?? rowKey(obj), open = openKeys.has(key);
   const nameEl = h('span', { class: 'item-name' }, o.name || '(未命名)');
-  const stop = e => e.stopPropagation();
+  const stop = e => e.stopPropagation(), stopInput = e => { if (e.target.closest('input')) stop(e); };
   const head = h('div', { class: 'item-head', role: 'button', tabindex: 0, 'aria-expanded': String(open),
     onclick: () => { setOpen(key, !open); render(); },
     onkeydown: e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === head) { e.preventDefault(); head.click(); } } },
     h('span', { class: 'chev', 'aria-hidden': 'true' }),
-    o.lead && h('span', { onclick: stop, onkeydown: stop, style: 'display:inline-flex' }, o.lead),
+    o.lead && h('span', { class: 'lead', onclick: stopInput, onkeydown: stopInput }, o.lead),
     nameEl, dot(e => e.obj === obj), (o.chips || []).filter(Boolean).map(c => Array.isArray(c) ? h('span', { class: 'chip ' + c[1] }, c[0]) : h('span', { class: 'chip' }, c)), o.status,
     h('span', { class: 'item-ctl', onclick: stop, onkeydown: stop }, o.controls));
   if (jumpTo?.obj === obj && !jumpEl) jumpEl = head; // 行内有对应的输入框时，后面构建的输入框会覆盖它
@@ -614,7 +653,7 @@ function groupPage() {
         saveControls()),
       h('div', { class: 'tabs', role: 'tablist' }, GROUP_TABS.map(([id, name, count]) =>
         h('button', { class: tab === id ? 'on' : '', role: 'tab', 'aria-selected': String(tab === id), onclick: () => { tab = id; render(); } },
-          name, count && h('span', { class: 'n' }, count(p)), dot(e => e.pid === p.id && e.tab === id))))),
+          h('span', { class: 'tl', 'data-t': name }, name), count && h('span', { class: 'n' }, count(p)), dot(e => e.pid === p.id && e.tab === id))))),
     h('div', { class: 'content' }, views[tab](p)),
   ];
 }
@@ -681,10 +720,10 @@ function stateTag(s) {
 function tabSubs(p) {
   const status = (previews[p.id]?.subs || []).filter(x => !x.noCache), dialerList = nextId('dialers'), bi = baseIndex(p);
   const use = s => { const r = blankRef(s); p.sources.push(r); fixBase(p); setOpen(rowKey(r), true); markDirty(); render(); };
+  const addBtn = h('button', { disabled: cfg.sources.length === 0, title: cfg.sources.length === 0 ? '还没有节点来源' : null, onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源');
   return [
     datalist(dialerList, srcStatus[p.base]?.groups || []),
-    p.sources.length === 0 ? empty('还没有节点来源')
-      : h('div', { class: 'list' }, p.sources.map((r, i) => {
+    listWithActions(p.sources.length > 0 && h('div', { class: 'list' }, p.sources.map((r, i) => {
         const s = srcOf(r.source), others = usersOf(s.id).filter(x => x !== p), isBase = i === bi;
         const st = status.find(x => x.index === i && x.id === s.id);
         return item(r, {
@@ -703,15 +742,12 @@ function tabSubs(p) {
             h('div', { class: 'sublabel' }, sourceSummary(s)),
             h('div', { class: 'grid' },
               field('节点名前缀（可选）', r, 'prefix', { placeholder: '例：[机场A] ' }),
+              field('前置代理（可选）', r, 'dialer', { placeholder: '底板的策略组名或节点名', list: dialerList }),
               field('只保留匹配的节点（正则，可选）', r, 'include', { placeholder: '例：香港|日本' }),
-              field('排除匹配的节点（正则，可选）', r, 'exclude', { placeholder: '例：过期|剩余|官网' }),
-              field('前置代理（可选）', r, 'dialer', { placeholder: '底板的策略组名或节点名', list: dialerList })),
+              field('排除匹配的节点（正则，可选）', r, 'exclude', { placeholder: '例：过期|剩余|官网' })),
           ],
         });
-      })),
-    h('div', { class: 'row' },
-      h('button', { disabled: cfg.sources.length === 0, title: cfg.sources.length === 0 ? '还没有节点来源' : null, onclick: () => pickSourceDialog(p, use) }, '+ 添加节点来源'),
-      h('span', { class: 'fold' }, foldAll(p.sources.map(rowKey)))),
+      })), '还没有节点来源', addBtn, p.sources.map(rowKey)),
   ];
 }
 // 来源内容的只读概述（订阅组里展示用）
@@ -737,7 +773,7 @@ function newGroupDialog() {
   draw();
   dialog('新建订阅组', () => [
     field('名称', draft, 'name', { local: true }),
-    remotes.length > 0 && [h('div', { class: 'sublabel', style: 'margin-top:12px' }, '底板机场'), pickEl],
+    remotes.length > 0 && [h('div', { class: 'sublabel' }, '底板机场'), pickEl],
   ], [{ label: '新建订阅组', primary: true, onclick: close => {
     const p = { id: newID(), name: draft.name.trim() || '未命名', token: '', fileName: '', base: draft.base, sources: [], groups: [], parser: '' };
     if (draft.base) p.sources.push(blankRef(srcOf(draft.base)));
@@ -752,27 +788,26 @@ function tabGroups(p) {
   const add = () => {
     let n = p.groups.length + 1;
     while (p.groups.some(g => g.name === '新策略组 ' + n)) n++;
-    const g = { id: newID(), name: '新策略组 ' + n, groups: [], filter: '' };
+    const g = { id: newID(), name: '新策略组 ' + n, groups: [], filter: '', icon: '' };
     p.groups.push(g); setOpen(rowKey(g), true); markDirty(); render();
   };
-  return [
-    p.groups.length === 0 ? empty('还没有新增的策略组')
-      : h('div', { class: 'list' }, p.groups.map((g, i) => {
-        const st = results.find(x => x.id === g.id), icon = groupIcon(g.icon);
-        return item(g, {
-          name: g.name, lead: icon, status: st && groupResult(st),
-          controls: listButtons(p.groups, i),
-          body: nameEl => [
-            h('div', { class: 'grid' },
-              field('名称', g, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
-              field('节点（正则，匹配加了前缀的节点名，可选）', g, 'filter', { placeholder: '例：^家宽|香港' }),
-              field('图标链接（可选）', g, 'icon', { wide: true, placeholder: 'https://…/icon.png', onchange: icon.show }),
-              groupPicker(p, g)),
-          ],
-        });
-      })),
-    h('div', { class: 'row' }, h('button', { onclick: add }, '+ 新增策略组'), h('span', { class: 'fold' }, foldAll(p.groups.map(rowKey)))),
-  ];
+  // 有任一组配了图标时各行都给图标占位（.icons），输入图标链接时随之更新
+  const hasIcon = () => p.groups.some(g => iconURL(g.icon));
+  const list = p.groups.length > 0 && h('div', { class: 'list' + (hasIcon() ? ' icons' : '') }, p.groups.map((g, i) => {
+    const st = results.find(x => x.id === g.id), icon = groupIcon(g.icon);
+    return item(g, {
+      name: g.name, lead: icon, status: st && groupResult(st),
+      controls: listButtons(p.groups, i),
+      body: nameEl => [
+        h('div', { class: 'grid' },
+          field('名称', g, 'name', { onchange: v => { nameEl.textContent = v || '(未命名)'; } }),
+          field('节点（正则，匹配加了前缀的节点名，可选）', g, 'filter', { placeholder: '例：^家宽|香港' }),
+          field('图标链接（可选）', g, 'icon', { wide: true, placeholder: 'https://…/icon.png', onchange: v => { icon.show(v); list.classList.toggle('icons', hasIcon()); } }),
+          groupPicker(p, g)),
+      ],
+    });
+  }));
+  return listWithActions(list, '还没有新增的策略组', h('button', { onclick: add }, '+ 新增策略组'), p.groups.map(rowKey));
 }
 // 选用的底板策略组：候选是底板最近一次拉取到的策略组名，勾选的顺序就是成员的顺序（标上序号）。
 // 之前选过、底板里已经没有的也列出来，可以取消。勾选时只更新序号，不重绘
@@ -795,9 +830,10 @@ function groupPicker(p, g) {
   return h('div', { class: 'ua-field wide' }, h('span', { class: 'lbl' }, '底板策略组（可选）'), box);
 }
 // 行首的图标预览：show(链接) 在输入时更新；没有图标或加载失败时隐藏但保留位置
+const iconURL = v => /^https?:\/\/./.test((v || '').trim());
 function groupIcon(src) {
   const img = h('img', { class: 'gicon', alt: '', onerror: () => { img.style.visibility = 'hidden'; } });
-  img.show = v => { v = v.trim(); img.style.visibility = /^https?:\/\/./.test(v) ? 'visible' : 'hidden'; if (img.style.visibility === 'visible') img.src = v; else img.removeAttribute('src'); };
+  img.show = v => { v = (v || '').trim(); img.style.visibility = iconURL(v) ? 'visible' : 'hidden'; if (iconURL(v)) img.src = v; else img.removeAttribute('src'); };
   img.show(src);
   return img;
 }
@@ -818,12 +854,14 @@ function tabParser(p) {
       toast('已格式化');
     } catch (err) { toast(err.message); }
   };
+  const editor = field('', p, 'parser', { type: 'textarea', placeholder: PARSER_EXAMPLE });
+  editor.classList.add('parser');
   return [
-    field('', p, 'parser', { type: 'textarea', rows: 20, placeholder: PARSER_EXAMPLE }),
+    editor,
     h('div', { class: 'gap' }),
     h('div', { class: 'row' },
-      h('button', { class: 'sm', onclick: format }, '格式化'),
-      h('button', { class: 'sm', onclick: () => { if (!p.parser.trim() || confirm('覆盖当前内容？')) { p.parser = PARSER_EXAMPLE; markDirty(); render(); } } }, '填入示例')),
+      h('button', { onclick: format }, '格式化'),
+      h('button', { onclick: () => { if (!p.parser.trim() || confirm('覆盖当前内容？')) { p.parser = PARSER_EXAMPLE; markDirty(); render(); } } }, '填入示例')),
   ];
 }
 
@@ -872,7 +910,7 @@ function subResult(s) {
 // 经过「只保留 / 排除」之后，来源里的节点哪些留下（显示输出里的名字，悬停看原名）、哪些被过滤掉
 function nodeChanges(s) {
   const nodes = s.nodes || [], kept = nodes.filter(n => n.out), dropped = nodes.filter(n => !n.out);
-  if (nodes.length === 0) return h('p', { class: 'hint', style: 'margin:0' }, '没有节点');
+  if (nodes.length === 0) return h('p', { class: 'hint' }, '没有节点');
   return [
     h('div', { class: 'sublabel' }, `保留 ${kept.length} 个`),
     h('div', { class: 'nodes' }, kept.map(n => h('span', { class: 'chip', title: n.out !== n.name ? '原名：' + n.name : null }, n.out))),
@@ -886,27 +924,27 @@ function nodeChanges(s) {
 function tabPreview(p) {
   const preview = previews[p.id];
   if (previewFor !== p.id || !preview) { previewFor = p.id; setTimeout(() => loadPreview(p)); }
-  const fetchBtn = label => h('button', { class: 'sm', disabled: busy, onclick: () => fetchPreview(p) }, label);
+  const fetchBtn = label => h('button', { disabled: busy, onclick: () => fetchPreview(p) }, label);
   const missing = (preview?.subs || []).filter(x => x.noCache);
   const subKey = s => `pv:${p.id}:${s.index}:${s.id}`, groupKey = g => `pvg:${p.id}:${g.id}`;
   return !preview || preview.loading ? empty('正在生成…')
-    : preview.noCache ? h('div', { class: 'empty' }, h('b', {}, '底板还没有缓存'), fetchBtn('拉取并生成'))
+    : preview.noCache ? empty('底板还没有缓存', fetchBtn('拉取并生成'))
     : preview.error ? h('div', { class: 'warnbox' }, '生成失败：' + preview.error) : [
-      missing.length > 0 && h('div', { class: 'warnbox row' }, h('span', { style: 'margin-right:auto' }, `${quote(missing)}还没有缓存，未并入`), fetchBtn('拉取')),
+      missing.length > 0 && h('div', { class: 'warnbox row' }, h('span', { class: 'grow' }, `${quote(missing)}还没有缓存，未并入`), fetchBtn('拉取')),
       preview.draft && dirty && h('div', { class: 'warnbox' }, '包含未保存的修改'),
+      preview.warnings.length > 0 && h('div', { class: 'warnbox' }, preview.warnings.map(w => h('div', {}, w))),
       preview.subs.length > 0 && h('div', { class: 'list' }, preview.subs.map(s => item(s, {
         key: subKey(s), name: s.name, chips: [s.base && ['底板', 'base']], status: subResult(s),
         body: () => nodeChanges(s),
       }))),
       preview.newGroups?.length > 0 && h('div', { class: 'list' }, preview.newGroups.map(g => item(g, {
         key: groupKey(g), name: g.name, chips: ['新增策略组'], status: groupResult(g),
-        body: () => g.skipped ? h('p', { class: 'hint', style: 'margin:0' }, '未生成：' + g.skipped)
+        body: () => g.skipped ? h('p', { class: 'hint' }, '未生成：' + g.skipped)
           : h('div', { class: 'nodes' }, g.members.map((m, i) => h('span', { class: 'chip' + (i < g.groups ? ' base' : '') }, m))),
       }))),
-      preview.warnings.length > 0 && h('div', { class: 'warnbox' }, preview.warnings.map(w => h('div', {}, w))),
-      h('div', { class: 'row', style: 'margin-bottom:8px' }, h('span', { class: 'hint', style: 'margin:0 auto 0 0' }, `共 ${preview.total} 个节点、${preview.groups} 个策略组、${preview.rules} 条规则`),
+      h('div', { class: 'row bar' }, h('span', { class: 'hint grow' }, `共 ${preview.total} 个节点、${preview.groups} 个策略组、${preview.rules} 条规则`),
         foldAll([...preview.subs.map(subKey), ...(preview.newGroups || []).map(groupKey)]),
-        h('button', { class: 'sm', onclick: () => copyText(preview.yaml, '已复制配置内容') }, '复制配置内容')),
+        h('button', { onclick: () => copyText(preview.yaml, '已复制配置内容') }, '复制配置内容')),
       h('pre', {}, preview.yaml),
     ];
 }
@@ -923,29 +961,29 @@ function accessCard(p) {
   const week = Date.now() - 7 * 864e5, fresh = all.filter(r => r.newIp && new Date(r.time) > week).length;
   return h('div', { class: 'card' }, h('h3', {}, '访问记录'),
     fresh > 0 && h('div', { class: 'warnbox' }, `最近 7 天有 ${fresh} 次拉取来自新 IP`),
-    accessLog[p.id] == null ? h('p', { class: 'hint', style: 'margin:0' }, '正在加载…')
-      : all.length === 0 ? h('p', { class: 'hint', style: 'margin:0 0 12px' }, '还没有客户端拉取过这个链接。')
-      : h('div', { class: 'tblwrap', style: 'margin-bottom:12px' }, h('table', {},
+    accessLog[p.id] == null ? h('p', { class: 'hint' }, '正在加载…')
+      : all.length === 0 ? h('p', { class: 'hint bar' }, '还没有客户端拉取过这个链接。')
+      : h('div', { class: 'tblwrap' }, h('table', {},
         h('tr', {}, ['时间', 'IP', '客户端 UA', '结果'].map(t => h('th', {}, t))),
         shown.map(r => h('tr', {},
-          h('td', { style: 'white-space:nowrap' }, fmtTime(r.time)),
-          h('td', { style: 'white-space:nowrap' }, r.ip, r.newIp && h('span', { class: 'chip', style: 'margin-left:6px' }, '新 IP')),
+          h('td', { class: 'nw' }, fmtTime(r.time)),
+          h('td', { class: 'nw' }, r.ip, r.newIp && h('span', { class: 'chip' }, '新 IP')),
           h('td', { class: 'clip', title: r.ua }, r.ua || '(没带 UA)'),
           h('td', {}, r.status === 200 ? h('span', { class: 'tag ok' }, `${r.nodes} 个节点`) : h('span', { class: 'tag err' }, r.status === 502 ? '失败：没有可用节点' : '失败：HTTP ' + r.status)))))),
     accessLog[p.id] != null && h('div', { class: 'row' },
-      h('button', { class: 'sm', onclick: () => loadAccess(p.id) }, '刷新'),
-      all.length > 15 && h('button', { class: 'sm', onclick: () => { ui.accessAll = !ui.accessAll; render(); } }, ui.accessAll ? '只显示最近 15 次' : `显示全部 ${all.length} 次`),
-      all.length > 0 && h('button', { class: 'sm danger', onclick: async () => { if (!confirm('清空这个订阅组的访问记录？')) return; try { await api('DELETE', '/api/access?profile=' + p.id); accessLog[p.id] = []; render(); } catch (err) { toast(err.message); } } }, '清空记录')));
+      h('button', { onclick: () => loadAccess(p.id) }, '刷新'),
+      all.length > 15 && h('button', { onclick: () => { ui.accessAll = !ui.accessAll; render(); } }, ui.accessAll ? '只显示最近 15 次' : `显示全部 ${all.length} 次`),
+      all.length > 0 && h('button', { class: 'danger', onclick: async () => { if (!confirm('清空这个订阅组的访问记录？')) return; try { await api('DELETE', '/api/access?profile=' + p.id); accessLog[p.id] = []; render(); } catch (err) { toast(err.message); } } }, '清空记录')));
 }
 
 function tabMore(p) {
   return [
     h('div', { class: 'card' }, h('h3', {}, '订阅链接'),
       p.token ? [
-        h('div', { class: 'row' }, h('input', { type: 'text', readonly: true, value: subLink(p), style: 'flex:1 1 300px', onfocus: e => e.target.select() }),
+        h('div', { class: 'row' }, h('input', { type: 'text', readonly: true, value: subLink(p), onfocus: e => e.target.select() }),
           h('button', { onclick: () => copyText(subLink(p), '已复制订阅链接') }, '复制'),
           h('button', { class: 'danger', onclick: async () => { if (!confirm('重置后旧链接立即失效，确定？')) return; if (dirty && !(await save())) return; cfg = normalize(await api('POST', '/api/token', { profile: cur().id })); saved = clone(cfg); render(); toast('已重置链接'); } }, '重置链接')),
-      ] : h('p', { class: 'hint', style: 'margin:0' }, '保存修改后生成这个订阅组的订阅链接。')),
+      ] : h('p', { class: 'hint' }, '保存修改后生成这个订阅组的订阅链接。')),
     accessCard(p),
     h('div', { class: 'card' }, h('h3', {}, '显示名称'),
       field('', p, 'fileName', { placeholder: p.name })),
@@ -1031,8 +1069,7 @@ function sourcesPage() {
   return [
     h('div', { class: 'ws-head plain' }, h('div', { class: 'ws-top' }, h('h2', {}, '节点来源'), saveControls())),
     h('div', { class: 'content' },
-      cfg.sources.length === 0 ? empty('还没有节点来源')
-        : h('div', { class: 'list' }, cfg.sources.map(s => {
+      listWithActions(cfg.sources.length > 0 && h('div', { class: 'list' }, cfg.sources.map(s => {
           const users = usersOf(s.id), bases = cfg.profiles.filter(p => p.base === s.id);
           return item(s, {
             name: s.name, chips: [...sourceChips(s), bases.length > 0 && [`${bases.length} 个订阅组的底板`, 'base'], users.length > 0 ? `${users.length} 个订阅组在用` : '未被使用', ...trafficOf(s)],
@@ -1048,11 +1085,10 @@ function sourcesPage() {
               h('div', { class: 'grid' }, sourceFields(s, v => { nameEl.textContent = v || '(未命名)'; })),
             ],
           });
-        })),
-      h('div', { class: 'row' },
+        })), '还没有节点来源', [
         h('button', { onclick: () => add('remote') }, '+ 添加机场订阅'),
         h('button', { onclick: () => add('manual') }, '+ 添加手动节点'),
-        h('span', { class: 'fold' }, foldAll(cfg.sources.map(rowKey))))),
+      ], cfg.sources.map(rowKey))),
   ];
 }
 
@@ -1070,8 +1106,8 @@ function uaFollowStatus() {
     v.version ? h('span', { class: 'tag ok', title: v.okAt && '查到于 ' + fmtTime(v.okAt) }, `clash-verge/${v.version}`)
       : h('span', { class: 'tag' }, `还没查到版本，暂用 ${DEFAULT_UA}`),
     v.error && h('span', { class: 'tag err', title: v.error }, `检查失败 · ${ago(v.checkedAt)}：${v.error}`),
-    !v.error && v.checkedAt && h('span', { class: 'hint', style: 'margin:0' }, `检查于 ${ago(v.checkedAt)}`),
-    h('button', { class: 'sm', disabled: v.checking, onclick: checkUA }, v.checking ? '检查中…' : '立即检查'));
+    !v.error && v.checkedAt && h('span', { class: 'hint' }, `检查于 ${ago(v.checkedAt)}`),
+    h('button', { disabled: v.checking, onclick: checkUA }, v.checking ? '检查中…' : '立即检查'));
 }
 // 拉取 UA：「跟随 Clash Verge Rev 最新版」和「自定义」二选一，只显示所选模式的内容
 function uaField() {
@@ -1103,7 +1139,7 @@ function settingsPage() {
           uaField(),
           field('解锁 UA（访问来源的「解锁地址」时使用）', cfg, 'unlockUserAgent', { wide: true, placeholder: '默认 ' + DEFAULT_UNLOCK_UA }))),
       h('div', { class: 'card' }, h('h3', {}, '管理密码'),
-        envPassword ? h('p', { class: 'hint', style: 'margin:0' }, '密码由环境变量 ADMIN_PASSWORD 管理，如需修改请更改部署配置。') : [
+        envPassword ? h('p', { class: 'hint' }, '密码由环境变量 ADMIN_PASSWORD 管理，如需修改请更改部署配置。') : [
           h('div', { class: 'grid' }, field('原密码', pw, 'old', { type: 'password', local: true }), field('新密码（至少 6 位）', pw, 'new', { type: 'password', local: true })),
           h('div', { class: 'gap' }),
           h('button', { onclick: async () => { try { await api('POST', '/api/password', pw); toast('密码已修改'); render(); } catch (err) { toast(err.message); } } }, '修改密码')])),
