@@ -67,6 +67,8 @@ type Config struct {
 	UpdateInterval int       `json:"updateInterval"` // 小时，写入 Profile-Update-Interval 响应头
 	// UserAgent 是拉取上游订阅用的 UA，空则用 defaultUA
 	UserAgent string `json:"userAgent"`
+	// FollowUA 为真时拉取 UA 跟随 Clash Verge Rev 的最新版本（见 uafollow.go），还没查到版本时仍用 UserAgent
+	FollowUA bool `json:"followUA"`
 	// UnlockUserAgent 是访问解锁地址用的 UA，空则用 chromeUA
 	UnlockUserAgent string `json:"unlockUserAgent"`
 }

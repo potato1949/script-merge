@@ -132,7 +132,7 @@ func Build(cfg Config, p Profile, f *Fetcher, mode FetchMode) (*BuildResult, err
 				res.Subs[i] = st
 				return
 			}
-			url, ua, unlockUA := fetchArgs(cfg, s.Source)
+			url, ua, unlockUA := f.fetchArgs(cfg, s.Source)
 			if url == "" {
 				st.Error = "没有填写订阅链接"
 				res.Subs[i] = st

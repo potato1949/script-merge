@@ -222,6 +222,7 @@ let page = 'group', pi = 0, tab = 'subs'; // page: group / sources / settings
 const previews = {};           // 订阅组 ID → 最近一次预览结果
 const accessLog = {};          // 订阅组 ID → 访问记录（加载中为 null）
 let srcStatus = {};            // 节点来源 ID → 最近一次实际拉取上游的结果（服务端内存里的，不属于配置）
+let uaVer = {};                // 跟随 Clash Verge Rev 版本时服务端查到的最新版本（UAVersion，不属于配置）
 let srcCache = null;           // 各来源按页面上当前设置对应的缓存：{ sig, caches: {来源 ID → 缓存信息}, skew, error }
 const ui = { accessAll: false };
 let uid = 0;                   // 给 datalist 生成不重复的 id
@@ -359,7 +360,7 @@ function dialog(title, build, actions) {
 // ---------- 登录 / 初始化 ----------
 // 补齐缺失的字段，并保证当前选中的订阅组存在
 function normalize(c) {
-  c.revision ||= 0; c.sources ||= []; c.userAgent ||= ''; c.unlockUserAgent ||= '';
+  c.revision ||= 0; c.sources ||= []; c.userAgent ||= ''; c.followUA = !!c.followUA; c.unlockUserAgent ||= '';
   for (const s of c.sources) { s.kind ||= 'remote'; s.nodes ||= ''; s.url ||= ''; s.unlockUrl ||= ''; }
   const ids = new Set(c.sources.map(s => s.id));
   for (const p of c.profiles) {
@@ -373,7 +374,10 @@ function normalize(c) {
 async function boot() {
   const st = await (await fetch('/api/status')).json();
   envPassword = st.envPassword; build = st.build || {};
-  if (st.authed) { [cfg, srcStatus] = await Promise.all([api('GET', '/api/config').then(normalize), api('GET', '/api/source-status')]); saved = clone(cfg); render(); }
+  if (st.authed) {
+    [cfg, srcStatus, uaVer] = await Promise.all([api('GET', '/api/config').then(normalize), api('GET', '/api/source-status'), api('GET', '/api/ua-version').catch(() => ({}))]);
+    saved = clone(cfg); render();
+  }
   else renderAuth(!st.initialized);
 }
 function renderAuth(setup) {
@@ -406,7 +410,7 @@ async function save() {
 const PROFILE_FIELDS = [['name', '名称'], ['base', '底板', { tab: 'subs' }], ['parser', 'Parser', { tab: 'parser', long: true }], ['fileName', '显示名称', { tab: 'more' }]];
 const REF_FIELDS = [['enabled', '启用'], ['prefix', '节点名前缀'], ['include', '只保留'], ['exclude', '排除'], ['dialer', '前置代理']];
 const SOURCE_FIELDS = [['name', '名称'], ['url', '订阅链接'], ['unlockUrl', '解锁地址'], ['nodes', '节点', { long: true }]];
-const GLOBAL_FIELDS = [['cacheMinutes', '缓存时间'], ['updateInterval', '建议客户端更新间隔'], ['userAgent', '拉取订阅用的 UA'], ['unlockUserAgent', '解锁 UA']];
+const GLOBAL_FIELDS = [['cacheMinutes', '缓存时间'], ['updateInterval', '建议客户端更新间隔'], ['userAgent', '拉取订阅用的 UA'], ['followUA', 'UA 跟随 Clash Verge Rev 版本'], ['unlockUserAgent', '解锁 UA']];
 function diffConfig(cur, old) {
   const out = [], label = x => `「${x?.name || '(未命名)'}」`;
   const srcName = id => label(cur.sources.find(s => s.id === id) || old.sources.find(s => s.id === id));
@@ -808,7 +812,7 @@ function tabMore(p) {
 
 // ---------- 节点来源 ----------
 // 缓存键取决于链接、解锁地址和全局的 UA，这些变了就要重新读取缓存信息
-const cacheSig = () => JSON.stringify([cfg.userAgent, cfg.unlockUserAgent, cfg.cacheMinutes, cfg.sources.map(s => [s.id, s.kind, s.url, s.unlockUrl])]);
+const cacheSig = () => JSON.stringify([cfg.userAgent, cfg.followUA && uaVer.version, cfg.unlockUserAgent, cfg.cacheMinutes, cfg.sources.map(s => [s.id, s.kind, s.url, s.unlockUrl])]);
 // 读取各来源按页面上当前设置（可能还没保存）对应的缓存；带 source 时先跳过缓存重新拉取它。返回服务端的结果
 async function loadSourceCache(source) {
   const sig = cacheSig();
@@ -901,6 +905,22 @@ function sourcesPage() {
 }
 
 // ---------- 全局设置 ----------
+// 立即查一次 Clash Verge Rev 的最新版本
+async function checkUA() {
+  uaVer = { ...uaVer, checking: true }; render();
+  try { uaVer = await api('POST', '/api/ua-version'); } catch (err) { uaVer = { ...uaVer, checking: false }; toast(err.message); }
+  render();
+}
+// 跟随版本时实际用的 UA 和查询状态
+function uaFollowStatus() {
+  const v = uaVer, fallback = cfg.userAgent.trim() || DEFAULT_UA;
+  return h('div', { class: 'row wide' },
+    v.version ? h('span', { class: 'tag ok', title: v.okAt && '查到于 ' + fmtTime(v.okAt) }, `当前 clash-verge/${v.version}`)
+      : h('span', { class: 'tag' }, `还没查到版本，暂用 ${fallback}`),
+    v.error && h('span', { class: 'tag err', title: v.error }, `检查失败 · ${ago(v.checkedAt)}：${v.error}`),
+    !v.error && v.checkedAt && h('span', { class: 'hint', style: 'margin:0' }, `检查于 ${ago(v.checkedAt)}`),
+    h('button', { class: 'sm', disabled: v.checking, onclick: checkUA }, v.checking ? '检查中…' : '立即检查'));
+}
 function settingsPage() {
   const pw = { old: '', new: '' };
   return [
@@ -912,6 +932,9 @@ function settingsPage() {
           field('上游订阅缓存时间（分钟，0 为每次都拉取）', cfg, 'cacheMinutes', { type: 'number', min: 0 }),
           field('建议客户端更新间隔（小时）', cfg, 'updateInterval', { type: 'number', min: 1 }),
           field('拉取订阅用的 UA', cfg, 'userAgent', { wide: true, list: 'ua', placeholder: '默认 ' + DEFAULT_UA }),
+          h('div', { class: 'wide' }, field('跟随 Clash Verge Rev 最新版本', cfg, 'followUA', { type: 'checkbox',
+            onchange: v => { render(); if (v && !uaVer.version && !uaVer.checking) checkUA(); } })),
+          cfg.followUA && uaFollowStatus(),
           field('解锁 UA（访问来源的「解锁地址」时使用）', cfg, 'unlockUserAgent', { wide: true, placeholder: '默认 ' + DEFAULT_UNLOCK_UA }))),
       h('div', { class: 'card' }, h('h3', {}, '管理密码'),
         envPassword ? h('p', { class: 'hint', style: 'margin:0' }, '密码由环境变量 ADMIN_PASSWORD 管理，如需修改请更改部署配置。') : [

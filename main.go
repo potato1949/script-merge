@@ -61,6 +61,7 @@ func main() {
 	addr := ":" + env("PORT", "8080")
 	log.Printf("script-merge %s 已启动，监听 %s，数据目录 %s", buildInfo, addr, dataDir)
 	log.Print(proxySummary())
+	go app.followUALoop()
 	srv := &http.Server{Addr: addr, Handler: app.routes(), ReadHeaderTimeout: 10 * time.Second}
 	log.Fatal(srv.ListenAndServe())
 }
@@ -86,6 +87,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("GET /api/source-status", a.auth(a.handleSourceStatus))
 	mux.HandleFunc("POST /api/source-cache", a.auth(a.handleSourceCache))
 	mux.HandleFunc("POST /api/source-download", a.auth(a.handleSourceDownload))
+	mux.HandleFunc("GET /api/ua-version", a.auth(a.handleUAVersion))
+	mux.HandleFunc("POST /api/ua-version", a.auth(a.handleUAVersion))
 	mux.HandleFunc("GET /api/access", a.auth(a.handleGetAccess))
 	mux.HandleFunc("DELETE /api/access", a.auth(a.handleClearAccess))
 	mux.HandleFunc("GET /sub/{token}", a.handleSub)
@@ -386,6 +389,9 @@ func (a *App) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		keep[p.ID] = true
 	}
 	a.access.Prune(keep)
+	if c.FollowUA {
+		go a.fetcher.UA.CheckIfDue() // 刚开启跟随时不用等下一轮定时检查
+	}
 	writeJSON(w, http.StatusOK, c)
 }
 
@@ -520,7 +526,7 @@ func readSourceRequest(w http.ResponseWriter, r *http.Request) (cfg Config, src 
 
 // cacheOf 返回来源 s 按当前设置对应的缓存（过期的也算，不请求上游），没有就是 nil。
 func (a *App) cacheOf(cfg Config, s Source) *cacheEntry {
-	url, ua, unlockUA := fetchArgs(cfg, s)
+	url, ua, unlockUA := a.fetcher.fetchArgs(cfg, s)
 	if url == "" {
 		return nil
 	}
@@ -538,7 +544,7 @@ func (a *App) handleSourceCache(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{}
 	if src != nil {
-		url, ua, unlockUA := fetchArgs(cfg, *src)
+		url, ua, unlockUA := a.fetcher.fetchArgs(cfg, *src)
 		if url == "" {
 			writeErr(w, http.StatusBadRequest, "没有填写订阅链接")
 			return
@@ -582,6 +588,25 @@ func (a *App) handleSourceDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"yaml": string(b)})
+}
+
+// handleUAVersion 返回跟随 Clash Verge Rev 版本时查到的最新版本（UAVersion）；POST 先立即查一次。
+func (a *App) handleUAVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		writeJSON(w, http.StatusOK, a.fetcher.UA.Check())
+		return
+	}
+	writeJSON(w, http.StatusOK, a.fetcher.UA.State())
+}
+
+// followUALoop 在开启跟随版本时定期查一次最新版本（间隔见 UAVersion.due）。
+func (a *App) followUALoop() {
+	for {
+		if a.store.Config().FollowUA {
+			a.fetcher.UA.CheckIfDue()
+		}
+		time.Sleep(uaLoopInterval)
+	}
 }
 
 // handleSourceStatus 返回各节点来源最近一次实际拉取上游的结果（来源 ID → SourceState）。

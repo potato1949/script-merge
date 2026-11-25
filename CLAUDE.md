@@ -49,7 +49,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 数据模型（`store.go`）
 
-`Config` 下有 `Profiles[]`（各自带 `Base`、`Parser` 和对节点来源的引用 `Sources []SourceRef`）、全局的节点来源 `Sources[]`，以及全局的 `CacheMinutes` / `UpdateInterval` / `UserAgent`（拉取 UA）/ `UnlockUserAgent`（解锁 UA）。
+`Config` 下有 `Profiles[]`（各自带 `Base`、`Parser` 和对节点来源的引用 `Sources []SourceRef`）、全局的节点来源 `Sources[]`，以及全局的 `CacheMinutes` / `UpdateInterval` / `UserAgent`（拉取 UA）/ `FollowUA`（拉取 UA 跟随 Clash Verge Rev 版本）/ `UnlockUserAgent`（解锁 UA）。
 
 - **节点来源是全局对象，订阅组只存引用**：`Source` 放属于来源本身的内容（名称、`Kind`、链接、解锁地址、手填节点），`SourceRef` 放「这个订阅组怎么用它」（启用、前缀、Include / Exclude、前置代理 `Dialer`）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次。给来源加字段时先想清楚它属于哪一边
 - `Source.Kind`：`remote`（远程订阅）或 `manual`（手填节点）；空值等同 `remote`
@@ -72,7 +72,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 上游拉取与缓存（`fetch.go`）
 
-- 拉取 UA 只有全局的 `Config.UserAgent`（空则 `defaultUA`），没有透传
+- 拉取 UA 只有全局的一个，没有透传：`Fetcher.userAgent` 在开了 `Config.FollowUA` 且已查到版本时用 `clash-verge/<最新版本>`（`uafollow.go`，查 GitHub `releases/latest` 的跳转，不用限流严重的 api.github.com；成功后 30 天再查），否则用 `Config.UserAgent`，空则 `defaultUA`。拉取参数一律经 `Fetcher.fetchArgs` 算，保证缓存键一致
 - 缓存键 = 来源 ID + hash(链接 + UA + 解锁地址，有解锁地址时再加解锁 UA)，所以引用同一个来源的订阅组共用缓存。加了影响拉取结果的字段（不论在 `Source` 还是全局），必须加进 `cacheKey`；`SourceRef` 上的字段只影响拉到之后怎么用，不进缓存键
 - 失败时只回退到**同一个键**的旧缓存，不跨链接 / UA 回退（这是用户明确要求的行为）
 - 解锁地址是一次独立的普通 GET，UA 用全局的解锁 UA（`Config.UnlockUserAgent`，空则 `chromeUA`），不与订阅请求共享 Cookie（同样是用户明确要求）
@@ -101,7 +101,7 @@ Windows 下服务在运行时 `script-merge.exe` 被占用，重新编译前先�
 
 ### 前端（`web/index.html`）
 
-原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`saved`、`changes` / `dirty`、`page`、`pi`、`tab`、`srcStatus`、`previews`、`accessLog`）。页面：订阅组（标签页：节点来源 / Parser / 预览 / 本组设置）、节点来源、全局设置。
+原生 JS，`h()` 建元素，`render()` 整页重绘，状态是几个模块级变量（`cfg`、`saved`、`changes` / `dirty`、`page`、`pi`、`tab`、`srcStatus`、`uaVer`、`previews`、`accessLog`）。页面：订阅组（标签页：节点来源 / Parser / 预览 / 本组设置）、节点来源、全局设置。
 
 - **未保存的修改靠对比得出**：`saved` 是最近一次从服务端拿到的配置，`markDirty()` 用 `diffConfig(cfg, saved)` 算出 `changes`，并更新渲染时用 `watch()` 登记的标记（圆点、输入框竖条、计数），不重绘。给配置加用户可改的字段时要加进 `diffConfig` 的 `*_FIELDS`；拿到服务端返回的新配置后要同时更新 `saved`
 

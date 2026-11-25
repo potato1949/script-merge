@@ -20,7 +20,7 @@
 - 策略组和规则只来自底板机场，不提供策略组 / 规则编辑器、模板、规则集、规则仓库。要改就用 Parser
 - 底板的 `rule-providers` 原样输出，由客户端自己下载，服务端不平铺规则
 - 没有全局的基础配置：端口、DNS 等都用底板的，要改用 Parser 的 `mix-object`
-- 拉上游只用全局设置里的一个 UA，没有透传客户端 UA
+- 拉上游只用全局设置里的一个 UA（可以自动跟随 Clash Verge Rev 的最新版本），没有透传客户端 UA
 - 不做历史版本、导出导入；旧结构的配置不迁移，直接作废
 
 新功能如果又要引入「自己维护策略组 / 规则」，先回头看这里，别再把两套方案叠在一起。上一版的实现存档在 `archive/follow-mixed` 分支。
@@ -38,6 +38,7 @@
 | `parser.go` | CFW Parsers 语法实现、正则封装 |
 | `access.go` | 订阅链接的访问记录、客户端 IP 的判定 |
 | `version.go` | 程序版本：编译时指定的版本号，或构建信息里的 git tag / 提交 |
+| `uafollow.go` | 拉取 UA 跟随 Clash Verge Rev 最新版本：定期查最新 release 的 tag |
 | `web/index.html` | 管理界面 |
 | `build_test.go` | 测试：端到端构建、底板不可用时报错、上游走代理、前置代理 |
 | `api_test.go` | 测试：旧配置作废、配置校验（来源、引用、底板）、保存冲突、预览不保存与来源拉取状态、只用缓存的预览、来源缓存的查看 / 刷新 / 下载 |
@@ -59,7 +60,7 @@ Config
 │   ├─ Base                底板机场的来源 ID
 │   ├─ Sources[]           对节点来源的引用（SourceRef）：Source（来源 ID）、Enabled、Prefix、Include、Exclude、Dialer（前置代理）
 │   └─ Parser
-└─ 全局：CacheMinutes、UpdateInterval、UserAgent（拉取 UA）、UnlockUserAgent（解锁 UA）
+└─ 全局：CacheMinutes、UpdateInterval、UserAgent（拉取 UA）、FollowUA（拉取 UA 跟随 Clash Verge Rev 版本）、UnlockUserAgent（解锁 UA）
 ```
 
 **节点来源是全局对象，订阅组里只有引用。** 决定「从上游拿到什么」的属于来源本身（`Source`：链接、解锁地址、手填节点、名称）；决定「这个订阅组怎么用它」的属于引用（`SourceRef`：是否启用、前缀、Include / Exclude、前置代理）。同一个来源可以被多个订阅组引用，也可以在一个组里引用多次（比如按不同的正则拆成两批、加不同前缀）。缓存键里只有来源 ID，所以引用同一个来源的订阅组共用缓存。
@@ -76,7 +77,7 @@ Config
 
 ```
 1. 本组用到的来源：底板排第一个（不看启用开关），其余是启用的引用
-2. 并发拉取       remote：Fetcher.Get（UA 是全局的 UserAgent，空则 defaultUA）
+2. 并发拉取       remote：Fetcher.Get（UA 见 Fetcher.userAgent：跟随版本时的 clash-verge/<版本>，否则全局的 UserAgent，空则 defaultUA）
                  manual：parseCustomProxies 解析 Nodes
    底板没拿到（拉取失败且没有缓存），或者内容里没有策略组 → 返回错误，不输出
 3. root = 底板配置（去掉 proxies 后的整份，深拷贝）
@@ -116,7 +117,7 @@ Config
 
 ### 上游拉取与缓存（`fetch.go`）
 
-- 每次拉取：先 GET `UnlockURL`（若有），再 GET 订阅地址。解锁只是一次普通的 GET——上游要求该地址被访问过之后才放行订阅——两次请求互相独立，不共享 Cookie（用户明确要求）。解锁请求用全局的解锁 UA `Config.UnlockUserAgent`（为空用 `chromeUA`），订阅请求用 `Config.UserAgent`（为空用 `defaultUA`）。解锁请求只在网络失败时报错，不检查状态码
+- 每次拉取：先 GET `UnlockURL`（若有），再 GET 订阅地址。解锁只是一次普通的 GET——上游要求该地址被访问过之后才放行订阅——两次请求互相独立，不共享 Cookie（用户明确要求）。解锁请求用全局的解锁 UA `Config.UnlockUserAgent`（为空用 `chromeUA`），订阅请求的 UA 由 `Fetcher.userAgent` 决定：开了 `Config.FollowUA` 且已查到版本时用 `clash-verge/<最新版本>`，否则用 `Config.UserAgent`（为空用 `defaultUA`）。解锁请求只在网络失败时报错，不检查状态码
 - 订阅内容解析（`parseSubscription`）：Clash YAML（有 `proxies`）→ base64 解码后的分享链接 → 明文分享链接。YAML 除了节点，其余内容整份存进 `upstream.Doc`，键统一转成字符串（`stringKeys`，否则 `map[any]any` 存不进 JSON 缓存）
 - 缓存键 = `来源 ID + sha256(链接 + UA + UnlockURL)` 的前缀（`cacheKey`）；有解锁地址时解锁 UA 也计入。**给拉取加了影响结果的输入（不论在 `Source` 还是全局），必须加进 `cacheKey`**；`SourceRef` 上的字段只影响拉到之后怎么用，不进缓存键
 - 内存一份 + `DATA_DIR/cache/<key>.json` 一份，启动时全部读入内存。缓存经过 JSON 往返后整数会变成 `float64`，`toNode` 会把整数值的 float 还原成整数输出
@@ -124,6 +125,7 @@ Config
 - **失败时的回退**：`Fetcher.Get` 失败返回 `(同一个键的旧缓存或 nil, err)`，**不会**回退到其他链接 / UA 的结果（用户明确要求）。`Build` 据此设置 `SubStatus.Stale`
 - 缓存内容有格式版本（`cacheFormat`）：改了缓存里存什么就加一，旧格式的缓存视为已过期（拉取失败时仍可作为旧缓存用）
 - 来源 ID 被用作缓存文件名，所以 `validateConfig` 只接受 16 位十六进制且全局唯一的 ID，其他一律重新生成（防路径穿越）；来源 ID 变了，订阅组里的引用和底板跟着改
+- **UA 跟随版本**（`uafollow.go`）：`Config.FollowUA` 开启时，`followUALoop` 每小时看一次是否到期，到期就查 `github.com/clash-verge-rev/clash-verge-rev/releases/latest` 的跳转地址（`…/releases/tag/vX.Y.Z`，只认数字版本号）。不用 `api.github.com`：未登录的接口按 IP 每小时限 60 次，共用出口 IP 时实测直接 403。成功后 30 天再查，失败后隔 1 天重试（版本号不用跟得很紧，用户要求一个月一次），失败时保留之前的版本。保存配置时如果开着跟随也会检查一次是否到期；界面上的「立即检查」不看间隔（`POST /api/ua-version`）。结果存在 `DATA_DIR/ua-version.json`，重启后沿用。版本变了 UA 就变了，缓存键随之改变，各来源下次会重新拉取
 - `Fetcher.state` 记下每个来源最近一次**实际请求上游**的结果（`SourceState`：时间、错误、上次成功的时间 / 节点数 / 流量信息 / 策略组名），`GET /api/source-status` 给界面用：来源的状态标签、流量信息、前置代理的候选。只在内存里，重启后从磁盘缓存恢复成功的部分
 - 「节点来源」页展开来源时顶部是信息面板（`sourceFacts`：缓存和使用它的订阅组），远程来源显示它的缓存（`POST /api/source-cache`）：节点数、创建时间、过期时间和剩余时间（按响应里服务端的 `now` 换算，不受浏览器时钟偏差影响），可以「刷新缓存」（跳过缓存重新拉取这一个来源）和「下载配置文件」（`POST /api/source-download`，把缓存还原成完整的 Clash 配置：`upstream.config()` 把节点放回 `proxies`，经 `encodeYAML` 输出，不是上游的原始文本）。两个接口和预览一样带着前端当前的配置，缓存键按其中的链接、UA 算（`fetchArgs`，和 `Build` 共用）；只校验全局设置和节点来源，订阅组的内容不影响。前端按 `cacheSig()`（链接、解锁地址、UA、缓存时长）判断设置变了没有，变了或重新进入这个页面时重新读取
 - **代理**：只走环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`。`fetchSubscription` 的 `http.Client` 没有自定义 `Transport`，落在 `http.DefaultTransport` 上，它本身就读这几个变量。**以后换了自定义 `Transport`，要带上 `Proxy: http.ProxyFromEnvironment`**，否则代理静默失效——`TestFetchUsesProxy` 会发现。标准库对回环地址永远不走代理，且环境变量只在第一次发请求时读一次，所以测试在 `TestMain` 里设置代理，并用一个不存在的域名当上游
@@ -159,7 +161,7 @@ Config
 
 **保存冲突**：前端每次保存都是把整个 `cfg` PUT 回去，两个页面同时开着时后保存的会盖掉先保存的。所以 `Config.Revision` 每保存一次加一（`Store.SetConfig`），`PUT /api/config` 带回的 `revision` 和当前的对不上就返回 409，前端询问用户后带 `?force=1` 重新提交。重置令牌这种服务端自己发起的保存不检查（`expect` 传 -1）。
 
-`DATA_DIR/access.json`：访问记录。`DATA_DIR/cache/`：上游缓存。都不属于配置，删掉只是丢记录 / 重新拉取。
+`DATA_DIR/access.json`：访问记录。`DATA_DIR/cache/`：上游缓存。`DATA_DIR/ua-version.json`：跟随版本时查到的 Clash Verge Rev 版本。都不属于配置，删掉只是丢记录 / 重新拉取 / 重新查询。
 
 ## 访问记录（`access.go`）
 
@@ -186,6 +188,7 @@ Config
 | `POST /api/password` | 是 | `{old, new}` |
 | `POST /api/token` | 是 | `{profile}`，重置该订阅组的令牌，返回新配置 |
 | `GET /api/source-status` | 是 | `{来源 ID: SourceState}`，各来源最近一次实际请求上游的结果 |
+| `GET /api/ua-version` | 是 | `UAVersion`：跟随版本时查到的 Clash Verge Rev 版本 `{version, okAt, checkedAt, error}`。`POST` 先立即查一次再返回 |
 | `POST /api/source-cache` | 是 | `{config, source}`：按 `config`（前端当前的配置）里的设置返回各远程来源的缓存 `{caches: {来源 ID: CacheInfo}, now}`，没有缓存的不出现，不请求上游。带 `source` 时先跳过缓存重新拉取这个来源，失败的原因放在 `error` 里 |
 | `POST /api/source-download` | 是 | `{config, source}` → `{yaml}`：这个来源的缓存还原成的完整配置。没有缓存返回 404，不请求上游 |
 | `POST /api/preview` | 是 | `{config, profile, refresh}`：`config` 是前端当前的整份配置，`profile` 是订阅组在其中的下标。不保存。返回 `{yaml, subs, warnings, total, groups, rules, userinfo}` |
@@ -290,6 +293,7 @@ go vet ./... && gofmt -l .
 - `TestSaveConflict` / `TestPreviewUnsavedAndSourceStatus`：拿着旧版本号保存被拒绝、`force` 能覆盖；预览不落盘；来源状态在成功、失败、重启后的取值
 - `TestPreviewCachedOnly`：只用缓存的预览不请求上游；底板没缓存返回 `noCache`；其他来源没缓存只做标记；过期的缓存照用
 - `TestSourceCacheAPI`：来源缓存按请求里的设置查找、不请求上游；刷新跳过缓存、失败时带原因并保留旧缓存；换 UA 后是另一份缓存；下载还原出完整配置；Parser 写错不影响
+- `TestUAFollow` / `TestUAVersionDue` / `TestUAFollowAPI`：跟随版本时的 UA 与回退、版本落盘、查询失败或版本号无法识别时保留旧版本、检查间隔；预览拉取上游用的是查到的版本
 - `TestNodeHosts` / `TestParseSubscriptionKeepsDoc`：hosts 的查找与合并；上游配置去掉节点后整份留下、非字符串的键能存进缓存
 - `TestAccessLog` / `TestClientIP` / `TestBuildInfo` / `TestTagVersion` / `TestCommands` / `TestParserOrder` / `TestURIs`：见各自的注释
 

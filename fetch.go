@@ -119,9 +119,19 @@ type CacheInfo struct {
 }
 
 // fetchArgs 是拉取来源 s 实际用的链接、UA 和解锁 UA。Build 和来源缓存的接口都用它，保证算出同一个缓存键。
-func fetchArgs(cfg Config, s Source) (url, ua, unlockUA string) {
-	return strings.TrimSpace(s.URL), firstNonEmpty(strings.TrimSpace(cfg.UserAgent), defaultUA),
-		firstNonEmpty(strings.TrimSpace(cfg.UnlockUserAgent), chromeUA)
+func (f *Fetcher) fetchArgs(cfg Config, s Source) (url, ua, unlockUA string) {
+	return strings.TrimSpace(s.URL), f.userAgent(cfg), firstNonEmpty(strings.TrimSpace(cfg.UnlockUserAgent), chromeUA)
+}
+
+// userAgent 是拉取上游实际用的 UA：开了跟随版本且已查到版本时用 clash-verge/<最新版本>，
+// 否则用全局设置里填的，都没有则用 defaultUA。
+func (f *Fetcher) userAgent(cfg Config) string {
+	if cfg.FollowUA {
+		if ua := f.UA.State().UA(); ua != "" {
+			return ua
+		}
+	}
+	return firstNonEmpty(strings.TrimSpace(cfg.UserAgent), defaultUA)
 }
 
 // SourceState 是一个节点来源最近一次实际请求上游的结果（命中缓存的不算）。
@@ -158,13 +168,14 @@ type Fetcher struct {
 	fails map[string]failure
 	state map[string]SourceState // 来源 ID → 最近一次拉取的结果
 	locks map[string]*sync.Mutex // 每个缓存键一把锁，避免并发请求重复拉取上游
+	UA    *UAFollower            // 跟随 Clash Verge Rev 版本时查到的最新版本
 }
 
 func NewFetcher(dataDir string) *Fetcher {
 	f := &Fetcher{
 		dir:   filepath.Join(dataDir, "cache"),
 		cache: map[string]*cacheEntry{}, fails: map[string]failure{}, locks: map[string]*sync.Mutex{},
-		state: map[string]SourceState{},
+		state: map[string]SourceState{}, UA: NewUAFollower(dataDir),
 	}
 	_ = os.MkdirAll(f.dir, 0o755)
 	files, _ := filepath.Glob(filepath.Join(f.dir, "*.json"))
